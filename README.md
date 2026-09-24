@@ -116,7 +116,7 @@ Unique constraint: `(normalized_url)` for live captures. Imports dedupe on `(nor
 
 ## API
 
-All endpoints require header `X-API-Key` (single-user auth).
+All endpoints except `/health` require header `X-API-Key` (single-user auth); a missing or wrong key returns `401`.
 
 | Method   | Path                | Description                                                                                                          |
 | -------- | ------------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -128,7 +128,11 @@ All endpoints require header `X-API-Key` (single-user auth).
 | `POST`   | `/import/whatsapp`  | Upload `.txt` or `.zip` export; returns an import report                                                             |
 | `GET`    | `/imports`          | List past imports with stats                                                                                         |
 | `GET`    | `/digest/{date}.md` | Markdown digest for a date (by `shared_at`)                                                                          |
-| `GET`    | `/health`           | Health check                                                                                                         |
+| `GET`    | `/health`           | Health check (no auth). `200 {"status":"ok","database":"ok"}`, or `503` if Postgres is unreachable                    |
+
+`GET /links` query params: `type`, `tag`, `source`, `from` / `to` (ISO 8601 with offset; `from` inclusive, `to` exclusive, by `shared_at`), `q` (case-insensitive substring of url/title/description/note), `limit` (1–200, default 50), `offset`. Results are newest `shared_at` first and wrapped as `{ items, total, limit, offset }`.
+
+`POST /links` returns `201 { created: [...], duplicates: [...] }`, or `422` if the text contains no `http(s)` URL. `shared_at`, when given, must include a UTC offset.
 
 ---
 
@@ -245,13 +249,27 @@ OBSIDIAN_VAULT_PATH=
 cp .env.example .env
 docker compose up --build
 # API:  http://localhost:8000/docs
-# Web:  http://localhost:3000
+# Web:  http://localhost:3000   (Phase 4)
+```
+
+The `api` container runs `alembic upgrade head` on startup. Quick smoke test:
+
+```bash
+curl -X POST localhost:8000/links -H 'X-API-Key: change-me' -H 'content-type: application/json' \
+  -d '{"text": "check this https://github.com/astral-sh/uv", "source_channel": "api", "sender": "curl"}'
+curl localhost:8000/links -H 'X-API-Key: change-me'
 ```
 
 Backend tests:
 
 ```bash
+docker compose up -d db   # Postgres on localhost:5432, with a `linkvault_test` database
 cd backend
 uv sync
 uv run pytest
 ```
+
+Tests need a real Postgres at `DATABASE_URL` (default `postgresql+asyncpg://linkvault:linkvault@localhost:5432/linkvault_test`). The suite rebuilds the schema from the Alembic migrations once per run and rolls back each test's changes. If the database is unreachable, pytest stops with one message saying so.
+
+- `linkvault_test` is created by `docker/postgres-init/` only when the `pgdata` volume is first created. For an older volume, run `docker compose down -v` once (this deletes local data) or `docker compose exec db createdb -U linkvault linkvault_test`.
+- If port 5432 is taken (e.g. a Homebrew Postgres), set `POSTGRES_PORT=5433` in `.env` and point `DATABASE_URL` at that port.
