@@ -234,7 +234,7 @@ See `.env.example`:
 ```
 DATABASE_URL=postgresql+asyncpg://linkvault:linkvault@db:5432/linkvault
 API_KEY=change-me
-API_BASE_URL=http://api:8000   # where the bot reaches the API
+API_BASE_URL=http://localhost:8000   # bot → API outside Docker; compose sets http://api:8000
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
 PREVIEW_CONCURRENCY=5
@@ -267,7 +267,7 @@ curl localhost:8000/links -H 'X-API-Key: change-me'
 2. Find your numeric Telegram user ID: send the bot any message and check `docker compose logs bot` for `Ignoring update from unauthorized Telegram user id=…` (or ask [@userinfobot](https://t.me/userinfobot)). Add it to `TELEGRAM_ALLOWED_USER_IDS` (comma-separated for several accounts) and restart: `docker compose up -d bot`.
 3. Share a link to the bot from any app. It replies `Saved 1 link: …`, and the link shows up in `GET /links` with `source_channel = telegram`.
 
-The bot uses long polling, so it needs no public URL. Messages from users not on the allowlist are logged and never answered. Text and captions are both read, and URLs behind linked words are included. To run the bot outside Docker: `cd backend && API_BASE_URL=http://localhost:8000 uv run python -m app.bot.telegram`.
+The bot uses long polling, so it needs no public URL. Messages from users not on the allowlist are logged and never answered. Text and captions are both read, and URLs behind linked words are included. To run the bot outside Docker (with the API on localhost:8000): `cd backend && uv run python -m app.bot.telegram`.
 
 Backend tests:
 

@@ -34,6 +34,9 @@ services:
     build: ./backend
     env_file: .env
     command: ["python", "-m", "app.bot.telegram"]
+    environment:
+      # Set here rather than in .env so the bot always finds the api container.
+      API_BASE_URL: http://api:8000
     depends_on:
       - api
     restart: unless-stopped
