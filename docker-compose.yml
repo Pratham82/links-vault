@@ -29,5 +29,14 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  bot:
+    # Same image as the API; the bot calls the API at API_BASE_URL over HTTP.
+    build: ./backend
+    env_file: .env
+    command: ["python", "-m", "app.bot.telegram"]
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   pgdata:
