@@ -59,7 +59,7 @@ class LinkVaultClient:
         try:
             response = await self._http.post("/links", json=body)
         except httpx.HTTPError as exc:
-            raise ApiError(f"Request to the API failed: {exc!r}") from exc
+            raise ApiError(f"Could not reach the API at {self._http.base_url}: {exc!r}") from exc
 
         if response.status_code == httpx.codes.CREATED:
             return IngestResult.model_validate(response.json())
@@ -159,8 +159,11 @@ class LinkVaultBot:
             )
         except NoLinksError:
             reply = NO_LINKS_TEXT
-        except ApiError:
-            logger.exception("Saving links from Telegram message %s failed", message.message_id)
+        except ApiError as exc:
+            # The message says what went wrong; a traceback adds nothing for these.
+            logger.error(
+                "Saving links from Telegram message %s failed: %s", message.message_id, exc
+            )
             reply = API_ERROR_TEXT
         else:
             reply = format_reply(result)

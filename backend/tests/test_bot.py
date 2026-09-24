@@ -375,7 +375,9 @@ async def test_start_and_non_text_messages_get_help(
     assert sent_texts(telegram) == [HELP_TEXT]
 
 
-async def test_api_failure_is_reported_to_user(telegram: respx.MockRouter) -> None:
+async def test_api_failure_is_reported_to_user(
+    telegram: respx.MockRouter, caplog: pytest.LogCaptureFixture
+) -> None:
     def api_down(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("refused", request=request)
 
@@ -383,7 +385,11 @@ async def test_api_failure_is_reported_to_user(telegram: respx.MockRouter) -> No
         base_url="http://api.test", transport=httpx.MockTransport(api_down)
     ) as http:
         application = await _application(http)
-        await send(application, make_update("https://example.com"))
+        with caplog.at_level(logging.ERROR, logger="app.bot.telegram"):
+            await send(application, make_update("https://example.com"))
         await application.shutdown()
 
     assert sent_texts(telegram) == [API_ERROR_TEXT]
+    [record] = caplog.records
+    assert "Could not reach the API at http://api.test" in record.getMessage()
+    assert record.exc_info is None
