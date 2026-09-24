@@ -1,9 +1,11 @@
+import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, create_async_engine
 
 # Must be set before app settings are first read.
@@ -27,9 +29,29 @@ def settings():
     return get_settings()
 
 
+async def _check_database(url: str) -> None:
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect():
+            pass
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture(scope="session")
 def migrated_db(settings) -> Iterator[None]:
     """Rebuild the schema from migrations once per test run, so migrations are tested too."""
+    try:
+        asyncio.run(_check_database(settings.database_url))
+    except Exception as exc:
+        # Stop the whole run with one readable message instead of an error per test.
+        host = make_url(settings.database_url).render_as_string(hide_password=True)
+        pytest.exit(
+            f"Cannot connect to the test database at {host}: {exc!r}\n"
+            "Start Postgres (e.g. `docker compose up -d db`) or set DATABASE_URL.",
+            returncode=1,
+        )
+
     config = Config(str(BACKEND_DIR / "alembic.ini"))
     config.attributes["database_url"] = settings.database_url
     config.attributes["configure_logger"] = False
