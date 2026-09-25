@@ -38,7 +38,7 @@ export function Thumbnail({ src, site, brand, iconCandidates }: Props) {
   return <SiteMark site={site} brand={brand} iconCandidates={iconCandidates} />;
 }
 
-// The fallback, styled like a tinted iOS home-screen icon: the site's logo in greyscale on a
+// The fallback, styled like a home-screen app icon: the site's logo in its own colours on a
 // rounded tile, with the site's name underneath.
 function SiteMark({ site, brand, iconCandidates }: Omit<Props, "src">) {
   const [iconIndex, setIconIndex] = useState(0);
@@ -48,13 +48,19 @@ function SiteMark({ site, brand, iconCandidates }: Omit<Props, "src">) {
     <div
       className={`${frameClass} flex flex-col items-center justify-center gap-2.5 bg-gradient-to-br from-muted to-muted/40`}
     >
-      <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-zinc-900/5 dark:bg-zinc-950 dark:ring-white/10">
+      <div
+        // Brand logos get a tile in the brand's colour; site icons bring their own colours,
+        // so they sit on a neutral white tile.
+        style={brand ? { backgroundColor: brand.background } : undefined}
+        className="flex size-14 items-center justify-center overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-zinc-900/5 dark:ring-white/10"
+      >
         {brand ? (
           <svg
             role="img"
             aria-label={brand.title}
             viewBox="0 0 24 24"
-            className="size-7 fill-zinc-600 dark:fill-zinc-300"
+            fill={brand.foreground}
+            className="size-7"
           >
             <path d={brand.path} />
           </svg>
@@ -68,10 +74,8 @@ function SiteMark({ site, brand, iconCandidates }: Omit<Props, "src">) {
             referrerPolicy="no-referrer"
             onError={() => setIconIndex((index) => index + 1)}
             // The apple-touch-icon fills the tile like an app icon; a favicon is small, so
-            // it sits in the middle. Greyscale either way, to match the brand logos.
-            className={`grayscale opacity-80 dark:opacity-70 ${
-              iconIndex === 0 ? "size-full object-cover" : "size-7 object-contain"
-            }`}
+            // it sits in the middle.
+            className={iconIndex === 0 ? "size-full object-cover" : "size-7 object-contain"}
           />
         ) : (
           <GlobeIcon />

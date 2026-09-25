@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { brandLogoFor, hostnameOf, siteIconCandidates } from "./brands";
+import { brandLogoFor, foregroundOn, hostnameOf, siteIconCandidates } from "./brands";
 
 describe("brandLogoFor", () => {
   it.each([
@@ -18,6 +18,14 @@ describe("brandLogoFor", () => {
     const logo = brandLogoFor(url);
     expect(logo?.title).toBe(title);
     expect(logo?.path).toMatch(/^M/);
+    expect(logo?.background).toMatch(/^#[0-9A-Fa-f]{6}$/);
+  });
+
+  it("keeps the brand's colour", () => {
+    expect(brandLogoFor("https://www.youtube.com/watch?v=1")).toMatchObject({
+      background: "#FF0000",
+      foreground: "#ffffff",
+    });
   });
 
   it.each([
@@ -31,6 +39,17 @@ describe("brandLogoFor", () => {
 
   it("never matches on the bare top-level domain", () => {
     expect(brandLogoFor("https://something.com")).toBeUndefined();
+  });
+});
+
+describe("foregroundOn", () => {
+  it.each([
+    ["#FF0000", "#ffffff"], // YouTube red
+    ["#000000", "#ffffff"], // X
+    ["#FFFC00", "#000000"], // Snapchat yellow
+    ["#ffffff", "#000000"],
+  ])("%s → %s", (background, foreground) => {
+    expect(foregroundOn(background)).toBe(foreground);
   });
 });
 
