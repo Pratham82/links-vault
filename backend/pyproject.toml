@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.115",
     "httpx>=0.27",
     "pydantic-settings>=2.4",
+    "python-multipart>=0.0.32",
     "python-telegram-bot>=21.6",
     "sqlalchemy[asyncio]>=2.0.30",
     "uvicorn[standard]>=0.30",

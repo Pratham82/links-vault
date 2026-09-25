@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = Field(default=5.0, gt=0)
     # Where the worker saves thumbnails and the API serves them from.
     thumbnail_dir: Path = Path("data/thumbnails")
+    # Imported links are enriched more gently than live ones, so a backfill of thousands of
+    # X/Instagram links doesn't get rate-limited: at most this many at once, and never two
+    # fetches from the same site less than IMPORT_DOMAIN_DELAY_SECONDS apart.
+    import_preview_concurrency: int = Field(default=2, ge=1, le=20)
+    import_domain_delay_seconds: float = Field(default=5.0, ge=0)
 
 
 class BotSettings(BaseSettings):

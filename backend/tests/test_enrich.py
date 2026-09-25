@@ -14,10 +14,16 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionm
 
 from app.config import Settings
 from app.models import ContentType, Link, LinkStatus, SourceChannel
-from app.services.enrich import MAX_ATTEMPTS, claim_due_links, enrich_link, retry_delay
+from app.services.enrich import (
+    MAX_ATTEMPTS,
+    claim_due_import_links,
+    claim_due_links,
+    enrich_link,
+    retry_delay,
+)
 from app.services.normalize import normalize_url
 from app.services.preview import X_OEMBED_URL, build_http_client
-from app.worker import run_once
+from app.worker import DomainThrottle, run_once
 
 ARTICLE_HTML = """
 <meta property="og:type" content="article">
@@ -39,7 +45,7 @@ async def add_link(session: AsyncSession, url: str, **fields) -> Link:
     link = Link(
         url=url,
         normalized_url=normalize_url(url),
-        source_channel=SourceChannel.API,
+        source_channel=fields.pop("source_channel", SourceChannel.API),
         sender="tester",
         shared_at=fields.pop("shared_at", datetime.now(UTC)),
         **fields,
@@ -329,6 +335,155 @@ async def test_enrich_missing_link_is_a_no_op(
     await enrich_link(db_session, http, uuid.uuid4(), thumbnail_dir=tmp_path)
 
 
+# --- imported links ---
+
+
+async def add_import(session: AsyncSession, url: str, **fields) -> Link:
+    return await add_link(session, url, source_channel=SourceChannel.WHATSAPP_IMPORT, **fields)
+
+
+async def test_live_claim_leaves_imports_alone(db_session: AsyncSession) -> None:
+    live = await add_link(db_session, "https://a.com/live")
+    await add_import(db_session, "https://a.com/imported")
+
+    assert await claim_due_links(db_session, limit=10) == [live.id]
+
+
+async def test_import_claim_takes_one_link_per_host(db_session: AsyncSession) -> None:
+    await add_link(db_session, "https://live.com/a")
+    x_first = await add_import(
+        db_session, "https://x.com/a/status/1", shared_at=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    await add_import(
+        db_session, "https://x.com/a/status/2", shared_at=datetime(2026, 1, 2, tzinfo=UTC)
+    )
+    github = await add_import(db_session, "https://github.com/a/b")
+    await add_import(db_session, "https://gone.com/x", status=LinkStatus.DEAD)
+
+    claimed = await claim_due_import_links(db_session, limit=10)
+
+    assert sorted(claimed) == sorted([(x_first.id, "x.com"), (github.id, "github.com")])
+    await db_session.refresh(x_first)
+    assert x_first.enrich_attempts == 1
+    # Leased: a second claim moves on to the next link from x.com.
+    [(_, host)] = await claim_due_import_links(db_session, limit=10)
+    assert host == "x.com"
+    assert await claim_due_import_links(db_session, limit=10) == []
+
+
+async def test_import_claim_skips_busy_hosts_and_respects_limit(db_session: AsyncSession) -> None:
+    await add_import(db_session, "https://x.com/a/status/1")
+    await add_import(db_session, "https://www.instagram.com/p/abc/")
+    github = await add_import(db_session, "https://github.com/a/b")
+
+    claimed = await claim_due_import_links(
+        db_session, limit=1, skip_hosts=["x.com", "www.instagram.com"]
+    )
+
+    assert claimed == [(github.id, "github.com")]
+
+
+async def test_import_claim_handles_urls_without_a_host(db_session: AsyncSession) -> None:
+    odd = await add_import(db_session, "https:///no-host")
+    fine = await add_import(db_session, "https://a.com/x")
+
+    claimed = await claim_due_import_links(db_session, limit=10, skip_hosts=["b.com"])
+    assert sorted(claimed) == sorted([(odd.id, ""), (fine.id, "a.com")])
+
+
+def test_domain_throttle() -> None:
+    now = 100.0
+    throttle = DomainThrottle(delay_seconds=5, clock=lambda: now)
+    throttle.mark("x.com")
+    assert throttle.busy_hosts() == ["x.com"]
+
+    now = 104.9
+    throttle.mark("github.com")
+    assert sorted(throttle.busy_hosts()) == ["github.com", "x.com"]
+
+    now = 105.0
+    assert throttle.busy_hosts() == ["github.com"]
+
+
+@respx.mock
+async def test_run_once_throttles_imports_per_host(
+    connection: AsyncConnection, db_session: AsyncSession, tmp_path: Path, settings: Settings
+) -> None:
+    first = await add_import(
+        db_session, "https://example.com/1", shared_at=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    second = await add_import(
+        db_session, "https://example.com/2", shared_at=datetime(2026, 1, 2, tzinfo=UTC)
+    )
+    respx.get(url__regex=r"https://example\.com/\d").respond(200, html="<title>Hi</title>")
+    sessionmaker = async_sessionmaker(
+        bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False
+    )
+    worker_settings = settings.model_copy(update={"thumbnail_dir": tmp_path})
+    now = 0.0
+    throttle = DomainThrottle(delay_seconds=5, clock=lambda: now)
+
+    async with build_http_client(max_connections=2) as http:
+        assert await run_once(sessionmaker, http, worker_settings, throttle) == 1
+        # example.com was just fetched, so the second link waits.
+        assert await run_once(sessionmaker, http, worker_settings, throttle) == 0
+        now = 5.0
+        assert await run_once(sessionmaker, http, worker_settings, throttle) == 1
+
+    for link in (first, second):
+        await db_session.refresh(link)
+        assert link.status is LinkStatus.ENRICHED
+
+
+@respx.mock
+async def test_imported_short_link_merges_only_with_the_same_import(
+    db_session: AsyncSession, http: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    when = datetime(2026, 9, 1, tzinfo=UTC)
+    live = await add_link(db_session, "https://example.com/post", status=LinkStatus.ENRICHED)
+    other_day = await add_import(
+        db_session,
+        "https://example.com/post",
+        status=LinkStatus.ENRICHED,
+        shared_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    same_message = await add_import(
+        db_session, "https://example.com/post", status=LinkStatus.ENRICHED, shared_at=when
+    )
+    short = await add_import(db_session, "https://t.co/xyz", note="via x", shared_at=when)
+    respx.get("https://t.co/xyz").respond(301, headers={"Location": "https://example.com/post"})
+
+    assert await claim_due_import_links(db_session, limit=10) == [(short.id, "t.co")]
+    await enrich_link(db_session, http, short.id, thumbnail_dir=tmp_path)
+
+    assert await db_session.get(Link, short.id) is None
+    await db_session.refresh(same_message)
+    assert same_message.share_count == 2
+    assert same_message.note == "via x"
+    for untouched in (live, other_day):
+        await db_session.refresh(untouched)
+        assert untouched.share_count == 1
+
+
+@respx.mock
+async def test_imported_short_link_is_not_merged_into_a_live_link(
+    db_session: AsyncSession, http: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    live = await add_link(db_session, "https://example.com/post", status=LinkStatus.ENRICHED)
+    short = await add_import(db_session, "https://t.co/xyz")
+    respx.get("https://t.co/xyz").respond(301, headers={"Location": "https://example.com/post"})
+    respx.get("https://example.com/post").respond(200, html="<title>Post</title>")
+
+    await claim_due_import_links(db_session, limit=10)
+    await enrich_link(db_session, http, short.id, thumbnail_dir=tmp_path)
+
+    await db_session.refresh(short)
+    assert short.normalized_url == "https://example.com/post"
+    assert short.status is LinkStatus.ENRICHED
+    await db_session.refresh(live)
+    assert live.share_count == 1
+
+
 # --- worker loop ---
 
 
@@ -344,9 +499,11 @@ async def test_run_once_enriches_a_batch(
     )
     worker_settings = settings.model_copy(update={"thumbnail_dir": tmp_path})
 
+    throttle = DomainThrottle(delay_seconds=0)
+
     async with build_http_client(max_connections=2) as http:
-        assert await run_once(sessionmaker, http, worker_settings) == 1
-        assert await run_once(sessionmaker, http, worker_settings) == 0
+        assert await run_once(sessionmaker, http, worker_settings, throttle) == 1
+        assert await run_once(sessionmaker, http, worker_settings, throttle) == 0
 
     await db_session.refresh(link)
     assert link.status is LinkStatus.ENRICHED
@@ -369,4 +526,4 @@ async def test_run_once_survives_a_crashing_link(
         bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False
     )
     async with build_http_client(max_connections=2) as http:
-        assert await run_once(sessionmaker, http, settings) == 1
+        assert await run_once(sessionmaker, http, settings, DomainThrottle(delay_seconds=0)) == 1

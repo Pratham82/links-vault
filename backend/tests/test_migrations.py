@@ -13,6 +13,7 @@ from tests.conftest import BACKEND_DIR
 
 BEFORE_PHASE_2 = "65d309536b27"
 PHASE_2 = "e4e845be1e3b"
+PHASE_3 = "2e626bfd3a4f"
 
 
 async def _execute(url: str, *statements: str) -> list:
@@ -82,4 +83,32 @@ def test_phase_2_migration_merges_existing_duplicates(scratch_db: str) -> None:
         ("https://c.com", 1, "i1", "2026-01-01"),
         ("https://c.com", 1, "i2", "2026-01-02"),
     ]
+    command.downgrade(config, "base")
+
+
+def test_phase_3_migration_drops_repeated_imports(scratch_db: str) -> None:
+    config = _alembic(scratch_db)
+    command.upgrade(config, PHASE_2)
+    asyncio.run(
+        _execute(
+            scratch_db,
+            """
+            INSERT INTO links (url, normalized_url, source_channel, sender, note, shared_at,
+                               created_at)
+            VALUES
+              ('https://c.com', 'https://c.com', 'whatsapp_import', 'x', 'kept',
+               '2026-01-01Z', '2026-02-01Z'),
+              ('https://c.com?utm_source=a', 'https://c.com', 'whatsapp_import', 'x', 'repeat',
+               '2026-01-01Z', '2026-02-02Z'),
+              ('https://c.com', 'https://c.com', 'whatsapp_import', 'x', 'other day',
+               '2026-01-02Z', '2026-02-01Z'),
+              ('https://c.com', 'https://c.com', 'api', 'x', 'live', '2026-01-01Z', '2026-02-01Z')
+            """,
+        )
+    )
+
+    command.upgrade(config, PHASE_3)
+
+    rows = asyncio.run(_execute(scratch_db, "SELECT note FROM links ORDER BY note"))
+    assert [row.note for row in rows] == ["kept", "live", "other day"]
     command.downgrade(config, "base")

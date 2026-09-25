@@ -1,9 +1,10 @@
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, Enum, Index, Integer, String, Text, func, text
-from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -41,9 +42,11 @@ def _pg_enum(enum_cls: type[enum.Enum], name: str) -> Enum:
     return Enum(enum_cls, name=name, values_callable=lambda e: [m.value for m in e])
 
 
-# Rows that live captures dedupe against. WhatsApp imports (Phase 3) dedupe on
-# (normalized_url, shared_at) instead, so they're left out of the unique index.
+# Rows that live captures dedupe against, on normalized_url alone.
 LIVE_LINKS = text("source_channel <> 'whatsapp_import'")
+# WhatsApp imports dedupe among themselves on (normalized_url, shared_at) instead, so
+# re-importing a file is a no-op but the same link shared on two days stays two rows.
+IMPORTED_LINKS = text("source_channel = 'whatsapp_import'")
 # Rows the worker may still pick up.
 ENRICH_QUEUE = text("status IN ('pending', 'failed')")
 
@@ -57,6 +60,13 @@ class Link(Base):
             "normalized_url",
             unique=True,
             postgresql_where=LIVE_LINKS,
+        ),
+        Index(
+            "uq_links_normalized_url_shared_at_import",
+            "normalized_url",
+            "shared_at",
+            unique=True,
+            postgresql_where=IMPORTED_LINKS,
         ),
         Index("ix_links_enrich_queue", "next_attempt_at", postgresql_where=ENRICH_QUEUE),
     )
@@ -99,3 +109,21 @@ class Link(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class Import(Base):
+    """One uploaded chat export and what came of it."""
+
+    __tablename__ = "imports"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        server_default=text("gen_random_uuid()"),
+    )
+    source: Mapped[str] = mapped_column(Text)
+    filename: Mapped[str] = mapped_column(Text)
+    # The import report: messages, links_found, created, duplicates, unparseable_lines…
+    stats: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

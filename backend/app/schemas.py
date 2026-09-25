@@ -50,6 +50,38 @@ class LinkPage(BaseModel):
     offset: int
 
 
+class ImportReport(BaseModel):
+    """Response of `POST /import/whatsapp`."""
+
+    id: uuid.UUID
+    filename: str
+    messages: int
+    links_found: int
+    created: int
+    duplicates: int
+    unparseable_lines: int
+    sample_errors: list[str]
+
+
+class ImportStats(BaseModel):
+    messages: int
+    links_found: int
+    created: int
+    duplicates: int
+    unparseable_lines: int
+    sample_errors: list[str]
+
+
+class ImportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    source: str
+    filename: str
+    stats: ImportStats
+    created_at: datetime
+
+
 class Health(BaseModel):
     status: str
     database: str

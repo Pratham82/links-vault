@@ -7,18 +7,23 @@ Claiming uses a lease: in one short transaction the worker locks due rows with
 `FOR UPDATE SKIP LOCKED`, bumps `enrich_attempts`, and pushes `next_attempt_at` a few
 minutes out, then commits. The HTTP fetching happens after that, outside any transaction.
 If the worker crashes mid-fetch, the lease simply expires and the link becomes due again.
+
+Live captures and WhatsApp imports are claimed separately. Imported links can number in the
+thousands, so they get their own small quota and at most one link per site per claim; the
+worker also skips sites it fetched from a moment ago (see `app.worker.DomainThrottle`).
 """
 
 import logging
 import uuid
+from collections.abc import Collection
 from datetime import timedelta
 from pathlib import Path
 
 import httpx
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import ColumnElement, ScalarSelect, Update, and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import LIVE_LINKS, Link, LinkStatus
+from app.models import IMPORTED_LINKS, LIVE_LINKS, Link, LinkStatus, SourceChannel
 from app.services.classify import classify
 from app.services.normalize import is_short_link, normalize_url
 from app.services.preview import (
@@ -43,34 +48,80 @@ def retry_delay(attempts: int) -> timedelta:
     return _RETRY_BASE * _RETRY_FACTOR ** (attempts - 1)
 
 
+# The host part of a normalized URL ("https://x.com/a/status/1" → "x.com"), in SQL.
+# normalize_url already lowercased it. Two-argument substring() is a regex match in Postgres.
+# coalesce: a NULL host would make `NOT IN` NULL too, and that link could never be claimed.
+_HOST = func.coalesce(func.substring(Link.normalized_url, r"^[a-z][a-z0-9+.-]*://([^/?#:]+)"), "")
+
+
+def _is_due() -> ColumnElement[bool]:
+    return and_(
+        Link.status.in_([LinkStatus.PENDING, LinkStatus.FAILED]),
+        Link.enrich_attempts < MAX_ATTEMPTS,
+        or_(Link.next_attempt_at.is_(None), Link.next_attempt_at <= func.now()),
+    )
+
+
+def _lease(ids: ScalarSelect[uuid.UUID]) -> Update:
+    """UPDATE that leases the links whose ids the subquery `ids` selects."""
+    return (
+        update(Link)
+        .where(Link.id.in_(ids))
+        .values(
+            enrich_attempts=Link.enrich_attempts + 1,
+            next_attempt_at=func.now() + LEASE,
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+
 async def claim_due_links(session: AsyncSession, limit: int) -> list[uuid.UUID]:
-    """Lease up to `limit` due links to this worker and return their ids. Commits."""
+    """Lease up to `limit` due live links (not imports) to this worker. Commits."""
     due = (
         select(Link.id)
-        .where(
-            Link.status.in_([LinkStatus.PENDING, LinkStatus.FAILED]),
-            Link.enrich_attempts < MAX_ATTEMPTS,
-            or_(Link.next_attempt_at.is_(None), Link.next_attempt_at <= func.now()),
-        )
+        .where(LIVE_LINKS, _is_due())
         .order_by(Link.created_at)
         .limit(limit)
         # SKIP LOCKED: rows another worker is claiming right now are skipped instead of
         # waited on, so two workers never claim the same link.
         .with_for_update(skip_locked=True)
     )
-    claim = (
-        update(Link)
-        .where(Link.id.in_(due.scalar_subquery()))
-        .values(
-            enrich_attempts=Link.enrich_attempts + 1,
-            next_attempt_at=func.now() + LEASE,
-        )
-        .returning(Link.id)
-        .execution_options(synchronize_session=False)
-    )
+    claim = _lease(due.scalar_subquery()).returning(Link.id)
     ids = list((await session.scalars(claim)).all())
     await session.commit()
     return ids
+
+
+async def claim_due_import_links(
+    session: AsyncSession, limit: int, *, skip_hosts: Collection[str] = ()
+) -> list[tuple[uuid.UUID, str]]:
+    """Lease up to `limit` due imported links, each from a different host. Commits.
+
+    Hosts in `skip_hosts` are left alone (the worker fetched from them a moment ago).
+    Returns (link id, host) pairs so the worker can note when it last hit each host.
+    """
+    # DISTINCT ON keeps the first row of each host, i.e. the oldest due link per site.
+    oldest_per_host = (
+        select(Link.id, Link.created_at, Link.shared_at)
+        .where(IMPORTED_LINKS, _is_due(), _HOST.not_in(list(skip_hosts)))
+        .distinct(_HOST)
+        .order_by(_HOST, Link.created_at, Link.shared_at)
+        .subquery()
+    )
+    picked = (
+        select(oldest_per_host.c.id)
+        .order_by(oldest_per_host.c.created_at, oldest_per_host.c.shared_at)
+        .limit(limit)
+    )
+    # Postgres won't lock rows chosen with DISTINCT, so lock them in a separate step, and
+    # check they're still due: another worker may have claimed one in the meantime.
+    lockable = (
+        select(Link.id).where(Link.id.in_(picked), _is_due()).with_for_update(skip_locked=True)
+    )
+    claim = _lease(lockable.scalar_subquery()).returning(Link.id, _HOST)
+    rows = [(link_id, host) for link_id, host in (await session.execute(claim)).all()]
+    await session.commit()
+    return rows
 
 
 def _join_notes(first: str | None, second: str | None) -> str | None:
@@ -82,10 +133,18 @@ def _join_notes(first: str | None, second: str | None) -> str | None:
 
 
 async def _merge_into_existing(session: AsyncSession, link: Link, normalized_url: str) -> bool:
-    """If another live link already has `normalized_url`, fold `link` into it and delete it."""
+    """If `link` resolves to a link we already have, fold it into that one and delete it.
+
+    "Already have" follows the dedupe rules: any live link with `normalized_url`, or, for an
+    imported link, an imported link with that URL and the same `shared_at`.
+    """
+    if link.source_channel is SourceChannel.WHATSAPP_IMPORT:
+        same_link = and_(IMPORTED_LINKS, Link.shared_at == link.shared_at)
+    else:
+        same_link = LIVE_LINKS
     existing = await session.scalar(
         select(Link)
-        .where(Link.normalized_url == normalized_url, LIVE_LINKS, Link.id != link.id)
+        .where(Link.normalized_url == normalized_url, same_link, Link.id != link.id)
         .with_for_update()
     )
     if existing is None:
