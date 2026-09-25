@@ -1,7 +1,8 @@
 from functools import lru_cache
+from pathlib import Path
 from typing import Annotated
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -12,6 +13,11 @@ class Settings(BaseSettings):
 
     database_url: str
     api_key: str
+    # Worker: links enriched at once, and how long to wait when there's nothing to do.
+    preview_concurrency: int = Field(default=5, ge=1, le=50)
+    worker_poll_seconds: float = Field(default=5.0, gt=0)
+    # Where the worker saves thumbnails and the API serves them from.
+    thumbnail_dir: Path = Path("data/thumbnails")
 
 
 class BotSettings(BaseSettings):

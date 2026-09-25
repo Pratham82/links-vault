@@ -22,11 +22,30 @@ services:
   api:
     build: ./backend
     env_file: .env
+    environment:
+      THUMBNAIL_DIR: /data/thumbnails
     ports:
       - "8000:8000"
+    volumes:
+      # The worker writes thumbnails here; the API serves them at /thumbnails/{file}.
+      - thumbnails:/data/thumbnails
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    # Same image as the API. Enriches pending links (previews, types, thumbnails).
+    build: ./backend
+    env_file: .env
+    command: ["python", "-m", "app.worker"]
+    environment:
+      THUMBNAIL_DIR: /data/thumbnails
+    volumes:
+      - thumbnails:/data/thumbnails
+    depends_on:
+      # The api container applies migrations on startup; the worker retries until they exist.
+      - api
     restart: unless-stopped
 
   bot:
@@ -43,3 +62,4 @@ services:
 
 volumes:
   pgdata:
+  thumbnails:
