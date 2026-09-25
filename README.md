@@ -328,3 +328,8 @@ Tests need a real Postgres at `DATABASE_URL` (default `postgresql+asyncpg://link
 
 - `linkvault_test` is created by `docker/postgres-init/` only when the `pgdata` volume is first created. For an older volume, run `docker compose down -v` once (this deletes local data) or `docker compose exec db createdb -U linkvault linkvault_test`.
 - If port 5432 is taken (e.g. a Homebrew Postgres), set `POSTGRES_PORT=5433` in `.env` and point `DATABASE_URL` at that port.
+
+## Screenshots
+
+<img width="1481" height="1325" alt="image" src="https://github.com/user-attachments/assets/05b39c9a-17f7-4b90-8fe9-0bc7e94cc5a4" />
+
