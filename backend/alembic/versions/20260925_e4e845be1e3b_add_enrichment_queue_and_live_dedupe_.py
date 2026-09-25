@@ -18,7 +18,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 # Before Phase 2 every share became its own row. Fold rows with the same normalized_url
-# into the earliest one (summing share_count, joining notes) so the unique index can be
+# into the earliest one (summing share_count, joining distinct notes) so the unique index can be
 # built. Written as plain SQL so this migration never depends on current app code.
 _RANKED = """
     WITH ranked AS (
@@ -33,10 +33,20 @@ _RANKED = """
 _MERGE_DUPLICATES = (
     _RANKED
     + """
+    , notes AS (
+        -- Each distinct note once, in the order it was first shared.
+        SELECT ranked.keep_id, links.note, min(ranked.position) AS first_position
+        FROM ranked JOIN links ON links.id = ranked.id
+        WHERE links.note IS NOT NULL
+        GROUP BY ranked.keep_id, links.note
+    )
     , merged AS (
         SELECT ranked.keep_id,
                sum(links.share_count) AS share_count,
-               string_agg(links.note, E'\\n' ORDER BY ranked.position) AS note
+               (
+                   SELECT string_agg(notes.note, E'\\n' ORDER BY notes.first_position)
+                   FROM notes WHERE notes.keep_id = ranked.keep_id
+               ) AS note
         FROM ranked JOIN links ON links.id = ranked.id
         GROUP BY ranked.keep_id
         HAVING count(*) > 1
