@@ -1,5 +1,6 @@
 # Three stages: install dependencies, build, then a small runtime image that only holds
 # Next.js's standalone server (no dev dependencies, no source).
+# Node version: keep "node:22" in sync with .nvmrc.
 FROM node:22-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./

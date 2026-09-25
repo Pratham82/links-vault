@@ -4,6 +4,7 @@ Next.js (App Router) dashboard for the Link Vault API. See the root `README.md` 
 whole project; this is the `web` service.
 
 ```bash
+nvm use            # Node 22, from .nvmrc (the Docker image and CI use the same)
 npm install
 # API_KEY must match the API's; API_BASE_URL defaults to http://localhost:8000.
 printf 'API_KEY=change-me\nAPI_BASE_URL=http://localhost:8000\n' > .env.local
