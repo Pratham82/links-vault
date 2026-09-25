@@ -73,6 +73,10 @@ export interface BrandLogo {
   title: string;
   // SVG path data on a 24×24 viewBox.
   path: string;
+  // The brand's colour, as "#rrggbb": the logo sits on a tile of this colour, like an app icon.
+  background: string;
+  // White, or black when the brand colour is too light for white to show (Snapchat yellow).
+  foreground: string;
 }
 
 // Keyed by host without "www."; subdomains match too (blog.medium.com → medium.com).
@@ -168,9 +172,21 @@ export function brandLogoFor(url: string): BrandLogo | undefined {
   // docs.google.com → docs.google.com, then google.com; never the bare TLD.
   for (let i = 0; i < labels.length - 1; i++) {
     const icon = BRANDS[labels.slice(i).join(".")];
-    if (icon) return { title: icon.title, path: icon.path };
+    if (icon) {
+      const background = `#${icon.hex}`;
+      const foreground = foregroundOn(background);
+      return { title: icon.title, path: icon.path, background, foreground };
+    }
   }
   return undefined;
+}
+
+/** "#ffffff" or "#000000", whichever reads better on the `#rrggbb` colour `background`. */
+export function foregroundOn(background: string): string {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(background.slice(i, i + 2), 16) / 255);
+  // Perceived brightness (ITU-R BT.601 weights); above ~0.7 white text gets hard to read.
+  const brightness = 0.299 * r + 0.587 * g + 0.114 * b;
+  return brightness > 0.7 ? "#000000" : "#ffffff";
 }
 
 /** Icons a site usually serves itself, best first: the 180px apple-touch-icon, then favicon. */

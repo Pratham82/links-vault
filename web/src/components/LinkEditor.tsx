@@ -1,8 +1,21 @@
 "use client";
 
+import { motion } from "motion/react";
+import { LoaderCircle, Pencil, Trash2 } from "lucide-react";
 import { useActionState, useState, useTransition } from "react";
 
 import { removeLink, saveLink, type ActionResult } from "@/app/actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { TYPE_LABELS } from "@/lib/format";
 import { CONTENT_TYPES, type ContentType } from "@/lib/types";
 
@@ -15,10 +28,7 @@ interface Props {
 
 const IDLE: ActionResult = { ok: false };
 
-const inputClass =
-  "w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-900";
-const buttonClass =
-  "rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50";
+const labelClass = "text-xs font-medium text-muted-foreground";
 
 export function LinkEditor({ linkId, note, tags, contentType }: Props) {
   const [editing, setEditing] = useState(false);
@@ -43,70 +53,91 @@ export function LinkEditor({ linkId, note, tags, contentType }: Props) {
 
   if (!editing) {
     return (
-      <div className="flex items-center gap-1">
-        <button
+      <div className="flex items-center gap-0.5">
+        {deleteError && <span className="mr-1 text-xs text-destructive">{deleteError}</span>}
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={() => setEditing(true)}
-          className={`${buttonClass} text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800`}
+          aria-label="Edit link"
+          title="Edit"
+          className="text-muted-foreground"
         >
-          Edit
-        </button>
-        <button
+          <Pencil />
+        </Button>
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-sm"
           onClick={handleDelete}
           disabled={deleting}
-          className={`${buttonClass} text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950`}
+          aria-label={deleting ? "Deleting link" : "Delete link"}
+          title="Delete"
+          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         >
-          {deleting ? "Deleting…" : "Delete"}
-        </button>
-        {deleteError && <span className="text-xs text-red-600">{deleteError}</span>}
+          {deleting ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+        </Button>
       </div>
     );
   }
 
+  const noteId = `note-${linkId}`;
+  const tagsId = `tags-${linkId}`;
+
   return (
-    <form action={formAction} className="flex w-full flex-col gap-2">
-      <label className="flex flex-col gap-1 text-xs font-medium text-zinc-500">
-        Note
-        <textarea name="note" defaultValue={note ?? ""} rows={3} className={inputClass} />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-medium text-zinc-500">
-        Tags (comma-separated)
-        <input
-          name="tags"
-          defaultValue={tags.join(", ")}
-          placeholder="react, tools"
-          className={inputClass}
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-xs font-medium text-zinc-500">
-        Type
-        <select name="content_type" defaultValue={contentType} className={inputClass}>
-          {CONTENT_TYPES.map((type) => (
-            <option key={type} value={type}>
-              {TYPE_LABELS[type]}
-            </option>
-          ))}
-        </select>
-      </label>
-      {result.error && <p className="text-xs text-red-600">{result.error}</p>}
-      <div className="flex gap-2">
-        <button
-          type="submit"
-          disabled={saving}
-          className={`${buttonClass} bg-zinc-900 text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300`}
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        <button
+    <motion.form
+      action={formAction}
+      initial={{ opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+      className="flex w-full flex-col gap-3"
+    >
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={noteId} className={labelClass}>
+          Note
+        </Label>
+        <Textarea id={noteId} name="note" defaultValue={note ?? ""} rows={3} autoFocus />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor={tagsId} className={labelClass}>
+          Tags (comma-separated)
+        </Label>
+        <Input id={tagsId} name="tags" defaultValue={tags.join(", ")} placeholder="react, tools" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span aria-hidden className={labelClass}>
+          Type
+        </span>
+        <Select name="content_type" items={TYPE_LABELS} defaultValue={contentType}>
+          <SelectTrigger aria-label="Type" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {CONTENT_TYPES.map((type) => (
+              <SelectItem key={type} value={type}>
+                {TYPE_LABELS[type]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {result.error && <p className="text-xs text-destructive">{result.error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
           onClick={() => setEditing(false)}
           disabled={saving}
-          className={`${buttonClass} text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800`}
         >
           Cancel
-        </button>
+        </Button>
+        <Button type="submit" size="sm" disabled={saving}>
+          {saving && <LoaderCircle data-icon="inline-start" className="animate-spin" />}
+          {saving ? "Saving…" : "Save"}
+        </Button>
       </div>
-    </form>
+    </motion.form>
   );
 }
