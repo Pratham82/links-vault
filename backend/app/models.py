@@ -41,9 +41,25 @@ def _pg_enum(enum_cls: type[enum.Enum], name: str) -> Enum:
     return Enum(enum_cls, name=name, values_callable=lambda e: [m.value for m in e])
 
 
+# Rows that live captures dedupe against. WhatsApp imports (Phase 3) dedupe on
+# (normalized_url, shared_at) instead, so they're left out of the unique index.
+LIVE_LINKS = text("source_channel <> 'whatsapp_import'")
+# Rows the worker may still pick up.
+ENRICH_QUEUE = text("status IN ('pending', 'failed')")
+
+
 class Link(Base):
     __tablename__ = "links"
-    __table_args__ = (Index("ix_links_shared_at", "shared_at"),)
+    __table_args__ = (
+        Index("ix_links_shared_at", "shared_at"),
+        Index(
+            "uq_links_normalized_url_live",
+            "normalized_url",
+            unique=True,
+            postgresql_where=LIVE_LINKS,
+        ),
+        Index("ix_links_enrich_queue", "next_attempt_at", postgresql_where=ENRICH_QUEUE),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -74,6 +90,10 @@ class Link(Base):
         server_default=LinkStatus.PENDING.value,
     )
     share_count: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+    # Worker bookkeeping: how many times enrichment was tried, and when it may run next
+    # (a lease while a worker holds the link, then the retry backoff after a failure).
+    enrich_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     shared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

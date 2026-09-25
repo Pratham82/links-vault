@@ -90,17 +90,19 @@ Remote access from other devices is via Tailscale — nothing is exposed to the 
 | `note`           | text, nullable | Any text sent alongside the URL                                                       |
 | `title`          | text, nullable | From OG / oEmbed                                                                      |
 | `description`    | text, nullable |                                                                                       |
-| `image_url`      | text, nullable | Cached thumbnail path or remote URL                                                   |
+| `image_url`      | text, nullable | Cached thumbnail path (`/thumbnails/{file}`) or remote URL if caching failed          |
 | `site_name`      | text, nullable |                                                                                       |
 | `content_type`   | enum           | `tweet`, `instagram`, `youtube`, `github_repo`, `article`, `product`, `docs`, `other` |
 | `tags`           | text[]         | Topic tags (Phase 5)                                                                  |
 | `status`         | enum           | `pending`, `enriched`, `failed`, `dead`                                               |
 | `share_count`    | int            | Incremented on duplicate shares                                                       |
+| `enrich_attempts`| int            | Worker bookkeeping: enrichment tries so far (max 3)                                   |
+| `next_attempt_at`| timestamptz    | Worker bookkeeping: lease while being enriched, then retry backoff after a failure    |
 | `shared_at`      | timestamptz    | When I originally shared it (import uses message time)                                |
 | `created_at`     | timestamptz    | When stored                                                                           |
 | `updated_at`     | timestamptz    |                                                                                       |
 
-Unique constraint: `(normalized_url)` for live captures. Imports dedupe on `(normalized_url, shared_at)` so re-imports are idempotent.
+Unique constraint: `(normalized_url)` for live captures (a partial unique index over rows whose `source_channel` isn't `whatsapp_import`). Imports dedupe on `(normalized_url, shared_at)` so re-imports are idempotent.
 
 ### `imports`
 
@@ -128,21 +130,22 @@ All endpoints except `/health` require header `X-API-Key` (single-user auth); a 
 | `POST`   | `/import/whatsapp`  | Upload `.txt` or `.zip` export; returns an import report                                                             |
 | `GET`    | `/imports`          | List past imports with stats                                                                                         |
 | `GET`    | `/digest/{date}.md` | Markdown digest for a date (by `shared_at`)                                                                          |
+| `GET`    | `/thumbnails/{file}`| A cached preview image, as referenced by a link's `image_url`                                                        |
 | `GET`    | `/health`           | Health check (no auth). `200 {"status":"ok","database":"ok"}`, or `503` if Postgres is unreachable                    |
 
 `GET /links` query params: `type`, `tag`, `source`, `from` / `to` (ISO 8601 with offset; `from` inclusive, `to` exclusive, by `shared_at`), `q` (case-insensitive substring of url/title/description/note), `limit` (1–200, default 50), `offset`. Results are newest `shared_at` first and wrapped as `{ items, total, limit, offset }`.
 
-`POST /links` returns `201 { created: [...], duplicates: [...] }`, or `422` if the text contains no `http(s)` URL. `shared_at`, when given, must include a UTC offset.
+`POST /links` returns `201 { created: [...], duplicates: [...] }`, or `422` if the text contains no `http(s)` URL. `shared_at`, when given, must include a UTC offset. A URL whose normalized form is already saved lands in `duplicates`: its `share_count` goes up and the message's note is appended on a new line; `url`, `source_channel` and `shared_at` keep the first share's values.
 
 ---
 
 ## Ingestion pipeline
 
 1. **Extract** — find every URL in the message text; the remaining text becomes `note`.
-2. **Normalize** — lowercase host, strip fragments and tracking params (`utm_*`, `fbclid`, `gclid`, `igsh`, `igshid`, `si`, `s`, `ref`…), resolve known short links (`t.co`, `bit.ly`, `youtu.be` → canonical).
+2. **Normalize** — lowercase host, strip fragments and tracking params (`utm_*`, `fbclid`, `gclid`, `igsh`, `igshid`, `si`, `s`, `ref`…), resolve known short links (`t.co`, `bit.ly`, `youtu.be` → canonical). `youtu.be` and host aliases (`twitter.com` → `x.com`) are rewritten at ingest; short links that need an HTTP request (`t.co`, `bit.ly`, `amzn.to`…) are resolved by the worker, which merges the row into an existing link if the target is already saved.
 3. **Dedupe** — if `normalized_url` exists, increment `share_count` and append the note; don't create a new row.
 4. **Queue** — save with `status = pending`.
-5. **Preview (worker)** — fetch Open Graph / Twitter Card tags; use oEmbed for X, YouTube, Instagram where available; fall back to URL + note. Timeouts and bounded concurrency. Unreachable (404/410/DNS) → `dead`; other errors → `failed` with retry.
+5. **Preview (worker)** — fetch Open Graph / Twitter Card tags; use oEmbed for X, YouTube, Instagram where available; fall back to URL + note. Timeouts and bounded concurrency. Unreachable (404/410/DNS) → `dead`; other errors → `failed` with retry (after 1 min, then 5 min; 3 attempts in total). The preview image is downloaded and served from `/thumbnails/{file}`, because X/Instagram CDN URLs expire.
 6. **Type classification (worker)** — deterministic domain rules (see below).
 7. **Topic tags (worker, Phase 5)** — LLM call with title + description + note → up to 5 tags from a controlled-but-growable vocabulary.
 
@@ -238,6 +241,8 @@ API_BASE_URL=http://localhost:8000   # bot → API outside Docker; compose sets 
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
 PREVIEW_CONCURRENCY=5
+WORKER_POLL_SECONDS=5
+THUMBNAIL_DIR=data/thumbnails  # compose sets /data/thumbnails (shared volume)
 IMPORT_PREVIEW_CONCURRENCY=2
 TAGGER=none            # none | ollama | api
 OLLAMA_URL=http://host.docker.internal:11434
@@ -268,6 +273,12 @@ curl localhost:8000/links -H 'X-API-Key: change-me'
 3. Share a link to the bot from any app. It replies `Saved 1 link: …`, and the link shows up in `GET /links` with `source_channel = telegram`.
 
 The bot uses long polling, so it needs no public URL. Messages from users not on the allowlist are logged and never answered. Text and captions are both read, and URLs behind linked words are included. To run the bot outside Docker (with the API on localhost:8000): `cd backend && uv run python -m app.bot.telegram`.
+
+### Enrichment worker
+
+The `worker` container picks up `pending` links, fetches their previews (oEmbed for YouTube and X, Open Graph tags for everything else), sets `content_type`, caches the thumbnail, and marks each link `enriched`, `failed` or `dead`. It needs no setup: `docker compose up` starts it, and `docker compose logs worker` shows what it did. A link posted with `POST /links` usually shows its title within a few seconds.
+
+Thumbnails live in the `thumbnails` volume and are served at `GET /thumbnails/{file}` (needs `X-API-Key`, like every other endpoint). To run the worker outside Docker: `cd backend && uv run python -m app.worker`.
 
 Backend tests:
 

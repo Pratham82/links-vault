@@ -1,16 +1,20 @@
 """Shared ingestion path for every adapter (API, Telegram, WhatsApp import).
 
-Phase 0 implements extract → save. Normalization and dedupe arrive in Phase 2 and plug in
-here, so adapters never need to change.
+extract → normalize → dedupe → save as `pending`. No network calls happen here: the worker
+fetches previews (and resolves short links) later, so ingestion always returns quickly.
 """
 
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from sqlalchemy import case, func, literal_column, or_
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Link, SourceChannel
+from app.models import LIVE_LINKS, Link, SourceChannel
+from app.services.classify import classify
+from app.services.normalize import normalize_url
 
 # Anything that starts with http(s):// up to the next whitespace.
 _URL_RE = re.compile(r"https?://[^\s<>\"]+", re.IGNORECASE)
@@ -64,6 +68,56 @@ def extract(text: str) -> ExtractedMessage:
     return ExtractedMessage(urls=urls, note=note)
 
 
+async def _upsert_live_link(
+    session: AsyncSession,
+    *,
+    url: str,
+    normalized_url: str,
+    source_channel: SourceChannel,
+    sender: str,
+    note: str | None,
+    shared_at: datetime,
+) -> tuple[Link, bool]:
+    """Insert a link, or bump the existing one with the same normalized_url.
+
+    One `INSERT … ON CONFLICT DO UPDATE` statement, so two shares of the same URL arriving
+    at the same moment can't both insert: Postgres serializes them on the unique index.
+    Returns the row and whether it was newly inserted.
+    """
+    stmt = insert(Link).values(
+        url=url,
+        normalized_url=normalized_url,
+        source_channel=source_channel,
+        sender=sender,
+        note=note,
+        shared_at=shared_at,
+        content_type=classify(normalized_url),
+    )
+    # `excluded` is the row we tried to insert; `Link.*` is the row already in the table.
+    new_note = stmt.excluded.note
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Link.normalized_url],
+        index_where=LIVE_LINKS,
+        set_={
+            "share_count": Link.share_count + 1,
+            # Append the new note on its own line, unless it's empty or already there.
+            "note": case(
+                (or_(new_note.is_(None), Link.note == new_note), Link.note),
+                (Link.note.is_(None), new_note),
+                else_=Link.note + "\n" + new_note,
+            ),
+            "updated_at": func.now(),
+        },
+    )
+    # xmax is a Postgres system column that is 0 for a freshly inserted row and non-zero
+    # for one this statement updated, which tells created and duplicate apart.
+    stmt = stmt.returning(Link, literal_column("xmax = 0").label("inserted"))
+    # populate_existing: refresh the Link object if this session already holds it.
+    result = await session.execute(stmt, execution_options={"populate_existing": True})
+    link, inserted = result.one()
+    return link, inserted
+
+
 async def ingest_message(
     session: AsyncSession,
     *,
@@ -72,28 +126,29 @@ async def ingest_message(
     sender: str,
     shared_at: datetime | None = None,
 ) -> IngestOutcome:
-    """Store every URL in `text` as a pending link. Commits the session."""
+    """Store every URL in `text` as a pending link, or bump its duplicate. Commits."""
     extracted = extract(text)
     if not extracted.urls:
         raise NoUrlsFoundError("No http(s) URLs found in text")
 
     shared_at = (shared_at or datetime.now(UTC)).astimezone(UTC)
-    outcome = IngestOutcome()
+    # Two spellings of one URL in the same message (with/without utm_…) count once.
+    by_normalized: dict[str, str] = {}
     for url in extracted.urls:
-        link = Link(
+        by_normalized.setdefault(normalize_url(url), url)
+
+    outcome = IngestOutcome()
+    for normalized_url, url in by_normalized.items():
+        link, inserted = await _upsert_live_link(
+            session,
             url=url,
-            # Phase 2 replaces this with real normalization (tracking params, short links…).
-            normalized_url=url,
+            normalized_url=normalized_url,
             source_channel=source_channel,
             sender=sender,
             note=extracted.note,
             shared_at=shared_at,
         )
-        session.add(link)
-        outcome.created.append(link)
+        (outcome.created if inserted else outcome.duplicates).append(link)
 
     await session.commit()
-    for link in outcome.created:
-        # Load server-generated columns (created_at, updated_at) after the INSERT.
-        await session.refresh(link)
     return outcome

@@ -219,3 +219,73 @@ async def test_list_links_filters_by_type_and_tag(
     assert [link["url"] for link in by_tag["items"]] == ["https://example.com"]
 
     assert (await client.get("/links", params={"type": "nope"})).status_code == 422
+
+
+# --- normalization and dedupe (Phase 2) ---
+
+
+async def test_create_link_normalizes_and_classifies(client: AsyncClient) -> None:
+    data = await post_link(client, "https://youtu.be/dQw4w9WgXcQ?si=share")
+    [link] = data["created"]
+    assert link["url"] == "https://youtu.be/dQw4w9WgXcQ?si=share"
+    assert link["normalized_url"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    # Domain rules apply right away; the worker refines the type once it has the page.
+    assert link["content_type"] == "youtube"
+    assert link["status"] == "pending"
+
+
+async def test_duplicate_share_bumps_count_and_appends_note(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    first = (await post_link(client, "must read https://example.com/post?utm_source=x"))["created"][
+        0
+    ]
+    data = await post_link(
+        client, "still good https://EXAMPLE.com/post/#top", source_channel="telegram"
+    )
+
+    assert data["created"] == []
+    [duplicate] = data["duplicates"]
+    assert duplicate["id"] == first["id"]
+    assert duplicate["share_count"] == 2
+    assert duplicate["note"] == "must read\nstill good"
+    # The first share keeps its URL, channel and time.
+    assert duplicate["url"] == "https://example.com/post?utm_source=x"
+    assert duplicate["source_channel"] == "api"
+    assert duplicate["shared_at"] == first["shared_at"]
+    assert await db_session.scalar(select(func.count()).select_from(Link)) == 1
+
+
+async def test_duplicate_share_without_note_or_same_note_keeps_note(client: AsyncClient) -> None:
+    await post_link(client, "nice https://example.com/a")
+    await post_link(client, "https://example.com/a")
+    data = await post_link(client, "nice https://example.com/a")
+    [duplicate] = data["duplicates"]
+    assert duplicate["share_count"] == 3
+    assert duplicate["note"] == "nice"
+
+
+async def test_duplicate_share_adds_note_to_link_without_one(client: AsyncClient) -> None:
+    await post_link(client, "https://example.com/a")
+    [duplicate] = (await post_link(client, "later thought https://example.com/a"))["duplicates"]
+    assert duplicate["note"] == "later thought"
+
+
+async def test_same_url_twice_in_one_message_counts_once(client: AsyncClient) -> None:
+    data = await post_link(client, "https://example.com/a?utm_source=x https://example.com/a")
+    assert [link["share_count"] for link in data["created"]] == [1]
+    assert data["duplicates"] == []
+
+
+async def test_message_with_new_and_known_urls(client: AsyncClient) -> None:
+    await post_link(client, "https://known.com")
+    data = await post_link(client, "https://new.com https://known.com")
+    assert [link["url"] for link in data["created"]] == ["https://new.com"]
+    assert [link["url"] for link in data["duplicates"]] == ["https://known.com"]
+    assert data["duplicates"][0]["share_count"] == 2
+
+
+async def test_duplicate_is_reflected_when_reading_back(client: AsyncClient) -> None:
+    link_id = (await post_link(client, "https://example.com/a"))["created"][0]["id"]
+    await post_link(client, "https://example.com/a")
+    assert (await client.get(f"/links/{link_id}")).json()["share_count"] == 2
