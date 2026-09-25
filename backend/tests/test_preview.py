@@ -272,28 +272,72 @@ async def test_youtube_oembed_server_error_is_retryable(http: httpx.AsyncClient)
         await fetch_preview(http, YOUTUBE_URL)
 
 
+TWEET_OEMBED = {
+    "author_name": "jack",
+    "author_url": "https://twitter.com/jack",
+    "html": (
+        '<blockquote class="twitter-tweet"><p lang="en" dir="ltr">just setting up my'
+        " twttr<br>second line &amp; more</p>&mdash; jack (@jack) "
+        '<a href="https://twitter.com/jack/status/20">March 21, 2006</a></blockquote>'
+    ),
+}
+
+
 @respx.mock
-async def test_tweet_uses_oembed(http: httpx.AsyncClient) -> None:
-    route = respx.get(X_OEMBED_URL).respond(
+async def test_tweet_uses_oembed_text_and_page_image(http: httpx.AsyncClient) -> None:
+    route = respx.get(X_OEMBED_URL).respond(200, json=TWEET_OEMBED)
+    respx.get(TWEET_URL).respond(
         200,
-        json={
-            "author_name": "jack",
-            "author_url": "https://twitter.com/jack",
-            "html": (
-                '<blockquote class="twitter-tweet"><p lang="en" dir="ltr">just setting up my'
-                " twttr<br>second line &amp; more</p>&mdash; jack (@jack) "
-                '<a href="https://twitter.com/jack/status/20">March 21, 2006</a></blockquote>'
-            ),
-        },
+        html='<meta property="og:title" content="jack on X">'
+        '<meta property="og:image" content="https://pbs.twimg.com/media/abc.jpg">',
     )
     preview = await fetch_preview(http, TWEET_URL)
 
     assert route.calls.last.request.url.params["url"] == TWEET_URL
+    # Title and text from oEmbed, image from the page.
     assert preview == Preview(
         title="@jack: just setting up my twttr",
         description="just setting up my twttr second line & more",
+        image_url="https://pbs.twimg.com/media/abc.jpg",
         site_name="X",
     )
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "page",
+    [httpx.Response(403), httpx.Response(404), httpx.Response(200, html="<title>X</title>")],
+    ids=["blocked", "404", "no-image"],
+)
+async def test_tweet_without_page_image_still_has_oembed_text(
+    http: httpx.AsyncClient, page: httpx.Response
+) -> None:
+    respx.get(X_OEMBED_URL).respond(200, json=TWEET_OEMBED)
+    respx.get(TWEET_URL).mock(return_value=page)
+
+    preview = await fetch_preview(http, TWEET_URL)
+    assert preview.title == "@jack: just setting up my twttr"
+    assert preview.image_url is None
+
+
+@respx.mock
+async def test_tweet_page_timeout_does_not_fail_the_tweet(http: httpx.AsyncClient) -> None:
+    respx.get(X_OEMBED_URL).respond(200, json=TWEET_OEMBED)
+    respx.get(TWEET_URL).mock(side_effect=httpx.ReadTimeout("slow"))
+    assert (await fetch_preview(http, TWEET_URL)).title == "@jack: just setting up my twttr"
+
+
+@respx.mock
+async def test_oembed_follows_endpoint_redirects(http: httpx.AsyncClient) -> None:
+    # publish.twitter.com answers every request with a 301 to publish.x.com.
+    respx.get("https://publish.x.com/moved").respond(
+        301, headers={"Location": X_OEMBED_URL + "?url=" + TWEET_URL}
+    )
+    respx.get(X_OEMBED_URL).respond(200, json=TWEET_OEMBED)
+    data = await preview_module._fetch_oembed(
+        http, "https://publish.x.com/moved", {"url": TWEET_URL}
+    )
+    assert data == TWEET_OEMBED
 
 
 @respx.mock

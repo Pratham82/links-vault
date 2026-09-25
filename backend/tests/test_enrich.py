@@ -192,6 +192,8 @@ async def test_enrich_tweet_through_oembed(
             "html": "<blockquote><p>just setting up my twttr</p></blockquote>",
         },
     )
+    # X blocks the page fetch for the image; the tweet is still enriched from oEmbed.
+    respx.get("https://x.com/jack/status/20").respond(403)
 
     link = await claim_and_enrich(db_session, http, link, tmp_path)
 

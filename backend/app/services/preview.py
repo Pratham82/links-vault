@@ -31,7 +31,8 @@ MAX_PAGE_BYTES = 1_000_000
 MAX_SHORT_LINK_HOPS = 5
 
 YOUTUBE_OEMBED_URL = "https://www.youtube.com/oembed"
-X_OEMBED_URL = "https://publish.twitter.com/oembed"
+# publish.twitter.com now redirects here.
+X_OEMBED_URL = "https://publish.x.com/oembed"
 
 _DEAD_STATUSES = frozenset({404, 410})
 _TITLE_LIMIT = 300
@@ -273,7 +274,8 @@ async def _fetch_oembed(
 ) -> dict | None:
     """Return the oEmbed JSON, or None if the provider won't give us one (fall back to OG)."""
     try:
-        response = await client.get(endpoint, params=params)
+        # Providers move their endpoints (publish.twitter.com → publish.x.com), so follow.
+        response = await client.get(endpoint, params=params, follow_redirects=True)
     except httpx.HTTPError as exc:
         # The provider's own host failing to resolve says nothing about the link.
         raise _transport_error(endpoint, exc, dns_means_dead=False) from exc
@@ -317,8 +319,21 @@ async def _tweet_preview(client: httpx.AsyncClient, url: str) -> Preview | None:
     return Preview(
         title=_clean(f"{author}: {first_line}" if first_line else author, 120),
         description=_clean(text, _DESCRIPTION_LIMIT),
+        image_url=await _tweet_image(client, url),
         site_name="X",
     )
+
+
+async def _tweet_image(client: httpx.AsyncClient, url: str) -> str | None:
+    """oEmbed has no image, so borrow the tweet page's og:image when X serves one.
+
+    Best effort: X often blocks page fetches, and the oEmbed text is enough on its own.
+    """
+    try:
+        page = await _fetch_page(client, url)
+    except FetchError:
+        return None
+    return page.image_url
 
 
 async def fetch_preview(client: httpx.AsyncClient, url: str) -> Preview:
