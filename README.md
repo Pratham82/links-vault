@@ -127,7 +127,7 @@ All endpoints except `/health` require header `X-API-Key` (single-user auth); a 
 | `GET`    | `/links/{id}`       | Single link                                                                                                          |
 | `PATCH`  | `/links/{id}`       | Edit note / tags / type                                                                                              |
 | `DELETE` | `/links/{id}`       | Delete                                                                                                               |
-| `POST`   | `/import/whatsapp`  | Upload `.txt` or `.zip` export; returns an import report                                                             |
+| `POST`   | `/import/whatsapp`  | Upload `.txt` or `.zip` export (multipart field `file`; `date_order`, `timezone` query params); returns an import report |
 | `GET`    | `/imports`          | List past imports with stats                                                                                         |
 | `GET`    | `/digest/{date}.md` | Markdown digest for a date (by `shared_at`)                                                                          |
 | `GET`    | `/thumbnails/{file}`| A cached preview image, as referenced by a link's `image_url`                                                        |
@@ -183,6 +183,23 @@ All endpoints except `/health` require header `X-API-Key` (single-user auth); a 
 - Idempotent: re-uploading overlapping exports must not create duplicates.
 - Enrichment of imported links is throttled (low concurrency, per-domain delay) so X/Instagram don't rate-limit.
 - Response is an import report: `{ messages, links_found, created, duplicates, unparseable_lines, sample_errors[] }`.
+
+**Using it:**
+
+```bash
+curl -X POST 'localhost:8000/import/whatsapp?date_order=DMY' -H 'X-API-Key: change-me' \
+  -F 'file=@WhatsApp Chat with Links.zip'
+# {"id": "…", "filename": "WhatsApp Chat with Links.zip", "messages": 1840, "links_found": 912,
+#  "created": 912, "duplicates": 0, "unparseable_lines": 1, "sample_errors": ["line 1: …"]}
+curl localhost:8000/imports -H 'X-API-Key: change-me'   # past imports, newest first
+```
+
+- Query params: `date_order` (`DMY` default, `MDY`, or `YMD`) and `timezone` (IANA name, default `Asia/Kolkata`). The export's times have no timezone, so they're read as local times in `timezone`.
+- If a date in the file is impossible in `date_order` but valid in another order (e.g. `09/24/2026` with `DMY`), the upload is rejected with `422` naming the line and the order to use. Nothing is saved.
+- The whole file is imported in one transaction: an upload either imports completely or not at all, and can be retried.
+- `messages` counts messages from people, not system lines or media placeholders. `links_found` = `created` + `duplicates`. `sample_errors` shows up to 10 unparseable lines.
+- Uploads are limited to 25 MB (a text-only export is far smaller). In a `.zip`, the chat must be the only `.txt` file, or be named `_chat.txt`.
+- The worker enriches imported links in the background, at most `IMPORT_PREVIEW_CONCURRENCY` at once and `IMPORT_DOMAIN_DELAY_SECONDS` apart per site. Live links have their own quota, so new shares still get previews during a big backfill.
 
 ---
 
@@ -244,6 +261,7 @@ PREVIEW_CONCURRENCY=5
 WORKER_POLL_SECONDS=5
 THUMBNAIL_DIR=data/thumbnails  # compose sets /data/thumbnails (shared volume)
 IMPORT_PREVIEW_CONCURRENCY=2
+IMPORT_DOMAIN_DELAY_SECONDS=5
 TAGGER=none            # none | ollama | api
 OLLAMA_URL=http://host.docker.internal:11434
 OBSIDIAN_VAULT_PATH=

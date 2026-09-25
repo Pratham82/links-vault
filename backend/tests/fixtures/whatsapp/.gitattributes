@@ -1,0 +1,2 @@
+# Keep the exact bytes (CRLF endings, BOM, narrow no-break spaces): they are what we test.
+* -text diff

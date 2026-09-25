@@ -2,17 +2,21 @@
 
 extract → normalize → dedupe → save as `pending`. No network calls happen here: the worker
 fetches previews (and resolves short links) later, so ingestion always returns quickly.
+
+Dedupe depends on the channel. Live captures dedupe on `normalized_url` and a repeat share
+bumps `share_count`. WhatsApp imports dedupe on `(normalized_url, shared_at)` and a repeat
+changes nothing, so importing the same export twice is a no-op.
 """
 
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sqlalchemy import case, func, literal_column, or_
+from sqlalchemy import case, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import LIVE_LINKS, Link, SourceChannel
+from app.models import IMPORTED_LINKS, LIVE_LINKS, Link, SourceChannel
 from app.services.classify import classify
 from app.services.normalize import normalize_url
 
@@ -118,7 +122,65 @@ async def _upsert_live_link(
     return link, inserted
 
 
-async def ingest_message(
+async def _insert_imported_link(
+    session: AsyncSession,
+    *,
+    url: str,
+    normalized_url: str,
+    sender: str,
+    note: str | None,
+    shared_at: datetime,
+) -> tuple[Link, bool]:
+    """Insert an imported link unless the same link from the same moment is already stored.
+
+    Returns the row and whether it was newly inserted. A repeat is left untouched.
+    """
+    # Matching on `url` too catches a short link the worker has resolved since the last
+    # import: its normalized_url is now the target, but its url is still the t.co link.
+    existing = await session.scalar(
+        select(Link)
+        .where(
+            IMPORTED_LINKS,
+            Link.shared_at == shared_at,
+            or_(Link.normalized_url == normalized_url, Link.url == url),
+        )
+        .limit(1)
+    )
+    if existing is not None:
+        return existing, False
+
+    stmt = (
+        insert(Link)
+        .values(
+            url=url,
+            normalized_url=normalized_url,
+            source_channel=SourceChannel.WHATSAPP_IMPORT,
+            sender=sender,
+            note=note,
+            shared_at=shared_at,
+            content_type=classify(normalized_url),
+        )
+        # The unique index is the real guarantee: if a concurrent import inserted the row
+        # after our check, this inserts nothing instead of failing.
+        .on_conflict_do_nothing(
+            index_elements=[Link.normalized_url, Link.shared_at], index_where=IMPORTED_LINKS
+        )
+        .returning(Link)
+    )
+    result = await session.execute(stmt, execution_options={"populate_existing": True})
+    link = result.scalar_one_or_none()
+    if link is not None:
+        return link, True
+    existing = await session.scalar(
+        select(Link).where(
+            IMPORTED_LINKS, Link.normalized_url == normalized_url, Link.shared_at == shared_at
+        )
+    )
+    assert existing is not None
+    return existing, False
+
+
+async def stage_message(
     session: AsyncSession,
     *,
     text: str,
@@ -126,7 +188,11 @@ async def ingest_message(
     sender: str,
     shared_at: datetime | None = None,
 ) -> IngestOutcome:
-    """Store every URL in `text` as a pending link, or bump its duplicate. Commits."""
+    """Store every URL in `text` as a pending link, or match its duplicate. Doesn't commit.
+
+    The WhatsApp import stages every message of an export this way and commits once, so a
+    failed import leaves nothing behind.
+    """
     extracted = extract(text)
     if not extracted.urls:
         raise NoUrlsFoundError("No http(s) URLs found in text")
@@ -139,16 +205,40 @@ async def ingest_message(
 
     outcome = IngestOutcome()
     for normalized_url, url in by_normalized.items():
-        link, inserted = await _upsert_live_link(
-            session,
-            url=url,
-            normalized_url=normalized_url,
-            source_channel=source_channel,
-            sender=sender,
-            note=extracted.note,
-            shared_at=shared_at,
-        )
+        if source_channel is SourceChannel.WHATSAPP_IMPORT:
+            link, inserted = await _insert_imported_link(
+                session,
+                url=url,
+                normalized_url=normalized_url,
+                sender=sender,
+                note=extracted.note,
+                shared_at=shared_at,
+            )
+        else:
+            link, inserted = await _upsert_live_link(
+                session,
+                url=url,
+                normalized_url=normalized_url,
+                source_channel=source_channel,
+                sender=sender,
+                note=extracted.note,
+                shared_at=shared_at,
+            )
         (outcome.created if inserted else outcome.duplicates).append(link)
+    return outcome
 
+
+async def ingest_message(
+    session: AsyncSession,
+    *,
+    text: str,
+    source_channel: SourceChannel,
+    sender: str,
+    shared_at: datetime | None = None,
+) -> IngestOutcome:
+    """Store every URL in `text` as a pending link, or match its duplicate. Commits."""
+    outcome = await stage_message(
+        session, text=text, source_channel=source_channel, sender=sender, shared_at=shared_at
+    )
     await session.commit()
     return outcome
