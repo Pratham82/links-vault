@@ -1,7 +1,9 @@
+import { Inbox, SearchX } from "lucide-react";
 import Link from "next/link";
 
 import { FilterBar } from "@/components/FilterBar";
 import { LinkCard } from "@/components/LinkCard";
+import { LinkGrid, LinkGridItem } from "@/components/LinkGrid";
 import { Pagination } from "@/components/Pagination";
 import { ApiError, listLinks } from "@/lib/api";
 import { PAGE_SIZE, dashboardHref, hasActiveFilters, parseFilters } from "@/lib/filters";
@@ -16,7 +18,7 @@ export default async function Home(props: PageProps<"/">) {
   } catch (error) {
     if (!(error instanceof ApiError)) throw error;
     return (
-      <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
+      <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-6 text-sm text-destructive">
         <p className="font-semibold">Couldn&apos;t load links</p>
         <p className="mt-1">{error.message}</p>
       </div>
@@ -30,31 +32,37 @@ export default async function Home(props: PageProps<"/">) {
     <div className="flex flex-col gap-6">
       <FilterBar key={dashboardHref(filters)} filters={filters} />
 
-      <p className="text-sm text-zinc-500">
+      <p className="text-sm text-muted-foreground tabular-nums">
         {page.total === 0
           ? "No links"
           : `${firstShown}–${lastShown} of ${page.total} link${page.total === 1 ? "" : "s"}`}
       </p>
 
       {page.items.length > 0 ? (
-        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {page.items.map((link) => (
-            <li key={link.id} className="flex">
+        <LinkGrid>
+          {page.items.map((link, index) => (
+            <LinkGridItem key={link.id} index={index}>
               <LinkCard link={link} filters={filters} />
-            </li>
+            </LinkGridItem>
           ))}
-        </ul>
+        </LinkGrid>
       ) : (
-        <div className="rounded-xl border border-dashed border-zinc-300 p-10 text-center text-sm text-zinc-500 dark:border-zinc-700">
+        <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed bg-card/50 p-12 text-center text-sm text-muted-foreground">
           {hasActiveFilters(filters) ? (
             <>
-              Nothing matches these filters.{" "}
-              <Link href="/" className="underline">
-                Clear them
-              </Link>
+              <SearchX className="size-8 text-muted-foreground/60" aria-hidden />
+              <p>
+                Nothing matches these filters.{" "}
+                <Link href="/" className="font-medium text-foreground underline underline-offset-4">
+                  Clear them
+                </Link>
+              </p>
             </>
           ) : (
-            "No links yet. Share one to the Telegram bot, or import your WhatsApp history."
+            <>
+              <Inbox className="size-8 text-muted-foreground/60" aria-hidden />
+              <p>No links yet. Share one to the Telegram bot, or import your WhatsApp history.</p>
+            </>
           )}
         </div>
       )}

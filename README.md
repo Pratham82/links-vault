@@ -70,7 +70,7 @@ Remote access from other devices is via Tailscale — nothing is exposed to the 
 - **Backend:** Python 3.12, FastAPI, async SQLAlchemy 2.0, Pydantic v2, Alembic, httpx
 - **Bot:** python-telegram-bot (async, long polling)
 - **Worker:** Postgres-backed job loop (`SELECT … FOR UPDATE SKIP LOCKED` on `status = 'pending'`) — no Redis
-- **Frontend:** Next.js (App Router), TypeScript, Tailwind
+- **Frontend:** Next.js (App Router), TypeScript, Tailwind, shadcn/ui (Base UI), Motion
 - **Tooling:** uv, ruff, pytest, pytest-asyncio, respx (HTTP mocking), Docker Compose
 - **LLM tagging (Phase 5):** pluggable — local Ollama model or a hosted API
 

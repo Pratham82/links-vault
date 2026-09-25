@@ -31,7 +31,7 @@ export function Thumbnail({ src, site, brand, iconCandidates }: Props) {
         // Some CDNs refuse hotlinked images when they see a foreign Referer.
         referrerPolicy="no-referrer"
         onError={() => setImageFailed(true)}
-        className={`${frameClass} bg-zinc-100 object-cover dark:bg-zinc-800`}
+        className={`${frameClass} bg-muted object-cover transition-transform duration-500 ease-out group-hover:scale-[1.03]`}
       />
     );
   }
@@ -46,7 +46,7 @@ function SiteMark({ site, brand, iconCandidates }: Omit<Props, "src">) {
 
   return (
     <div
-      className={`${frameClass} flex flex-col items-center justify-center gap-2.5 bg-gradient-to-br from-zinc-100 to-zinc-200 dark:from-zinc-900 dark:to-zinc-800`}
+      className={`${frameClass} flex flex-col items-center justify-center gap-2.5 bg-gradient-to-br from-muted to-muted/40`}
     >
       <div className="flex size-14 items-center justify-center overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-zinc-900/5 dark:bg-zinc-950 dark:ring-white/10">
         {brand ? (

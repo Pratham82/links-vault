@@ -1,7 +1,14 @@
 import type { Metadata } from "next";
+import { Geist } from "next/font/google";
 import Link from "next/link";
+import { LibraryBig } from "lucide-react";
+
+import { cn } from "@/lib/utils";
 
 import "./globals.css";
+
+// Self-hosted by Next.js at build time; no request to Google from the browser.
+const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
   title: "Link Vault",
@@ -10,11 +17,17 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className="h-full antialiased">
-      <body className="min-h-full bg-zinc-50 text-zinc-900 dark:bg-black dark:text-zinc-100">
-        <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
-          <div className="mx-auto max-w-7xl px-4 py-3">
-            <Link href="/" className="text-lg font-semibold tracking-tight">
+    <html lang="en" className={cn("h-full bg-background antialiased", geist.variable)}>
+      <body className="min-h-full bg-muted/40">
+        <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur-md">
+          <div className="mx-auto flex max-w-7xl items-center px-4 py-3">
+            <Link
+              href="/"
+              className="flex items-center gap-2 font-heading text-base font-semibold tracking-tight"
+            >
+              <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                <LibraryBig className="size-4" aria-hidden />
+              </span>
               Link Vault
             </Link>
           </div>
