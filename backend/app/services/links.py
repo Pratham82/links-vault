@@ -1,13 +1,17 @@
-"""Read-side queries for links."""
+"""Queries and edits for stored links (everything except ingestion and enrichment)."""
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ContentType, Link, SourceChannel
+from app.services.thumbnails import FILENAME_RE, URL_PREFIX
 
 
 @dataclass
@@ -65,3 +69,39 @@ async def list_links(
 
 async def get_link(session: AsyncSession, link_id: uuid.UUID) -> Link | None:
     return await session.get(Link, link_id)
+
+
+async def update_link(
+    session: AsyncSession, link_id: uuid.UUID, changes: dict[str, Any]
+) -> Link | None:
+    """Apply `changes` (note / tags / content_type) to a link. Commits. None if not found."""
+    link = await session.get(Link, link_id)
+    if link is None:
+        return None
+    for field, value in changes.items():
+        setattr(link, field, value)
+    await session.commit()
+    # Reload so updated_at (set by the database) is current.
+    await session.refresh(link)
+    return link
+
+
+def _cached_thumbnail(link: Link, thumbnail_dir: Path) -> Path | None:
+    if not link.image_url or not link.image_url.startswith(URL_PREFIX):
+        return None
+    filename = link.image_url.removeprefix(URL_PREFIX)
+    return thumbnail_dir / filename if FILENAME_RE.fullmatch(filename) else None
+
+
+async def delete_link(session: AsyncSession, link_id: uuid.UUID, *, thumbnail_dir: Path) -> bool:
+    """Delete a link and its cached thumbnail. Commits. False if not found."""
+    link = await session.get(Link, link_id)
+    if link is None:
+        return False
+    thumbnail = _cached_thumbnail(link, thumbnail_dir)
+    await session.delete(link)
+    await session.commit()
+    if thumbnail is not None:
+        # After the commit: a leftover file is harmless, a link pointing at a missing one isn't.
+        await asyncio.to_thread(thumbnail.unlink, missing_ok=True)
+    return True

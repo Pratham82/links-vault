@@ -1,16 +1,17 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import AwareDatetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_api_key
+from app.config import Settings, get_settings
 from app.db import get_session
 from app.models import ContentType, SourceChannel
-from app.schemas import IngestResult, LinkIngest, LinkOut, LinkPage
+from app.schemas import IngestResult, LinkIngest, LinkOut, LinkPage, LinkUpdate
 from app.services import ingest
-from app.services.links import LinkFilters, get_link, list_links
+from app.services.links import LinkFilters, delete_link, get_link, list_links, update_link
 
 router = APIRouter(prefix="/links", tags=["links"], dependencies=[Depends(require_api_key)])
 
@@ -74,3 +75,28 @@ async def read_link(link_id: uuid.UUID, session: SessionDep) -> LinkOut:
     if link is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Link not found")
     return LinkOut.model_validate(link)
+
+
+@router.patch("/{link_id}")
+async def edit_link(link_id: uuid.UUID, body: LinkUpdate, session: SessionDep) -> LinkOut:
+    changes = body.model_dump(exclude_unset=True)
+    for field in ("tags", "content_type"):
+        if field in changes and changes[field] is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"{field} cannot be null"
+            )
+    link = await update_link(session, link_id, changes)
+    if link is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Link not found")
+    return LinkOut.model_validate(link)
+
+
+@router.delete("/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_link(
+    link_id: uuid.UUID,
+    session: SessionDep,
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> Response:
+    if not await delete_link(session, link_id, thumbnail_dir=settings.thumbnail_dir):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Link not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
