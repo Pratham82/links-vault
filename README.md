@@ -137,6 +137,8 @@ All endpoints except `/health` require header `X-API-Key` (single-user auth); a 
 
 `POST /links` returns `201 { created: [...], duplicates: [...] }`, or `422` if the text contains no `http(s)` URL. `shared_at`, when given, must include a UTC offset. A URL whose normalized form is already saved lands in `duplicates`: its `share_count` goes up and the message's note is appended on a new line; `url`, `source_channel` and `shared_at` keep the first share's values.
 
+`PATCH /links/{id}` takes any of `{ note, tags, content_type }` and changes only those: `note: null` or `""` clears the note, `tags` replaces the whole list (lowercased, `#` and repeats dropped, at most 20 tags of 50 characters), and unknown fields are rejected with `422`. `DELETE /links/{id}` returns `204` and also removes the link's cached thumbnail.
+
 ---
 
 ## Ingestion pipeline
@@ -273,7 +275,7 @@ OBSIDIAN_VAULT_PATH=
 cp .env.example .env
 docker compose up --build
 # API:  http://localhost:8000/docs
-# Web:  http://localhost:3000   (Phase 4)
+# Web:  http://localhost:3000
 ```
 
 The `api` container runs `alembic upgrade head` on startup. Quick smoke test:
@@ -297,6 +299,21 @@ The bot uses long polling, so it needs no public URL. Messages from users not on
 The `worker` container picks up `pending` links, fetches their previews (oEmbed for YouTube and X, Open Graph tags for everything else), sets `content_type`, caches the thumbnail, and marks each link `enriched`, `failed` or `dead`. It needs no setup: `docker compose up` starts it, and `docker compose logs worker` shows what it did. A link posted with `POST /links` usually shows its title within a few seconds.
 
 Thumbnails live in the `thumbnails` volume and are served at `GET /thumbnails/{file}` (needs `X-API-Key`, like every other endpoint). To run the worker outside Docker: `cd backend && uv run python -m app.worker`.
+
+### Dashboard
+
+`docker compose up` also starts the dashboard at http://localhost:3000 (`web` service). It shows every link as a card (thumbnail, title, site, type, tags, note, shared date), newest `shared_at` first, 48 per page. Filter by type, source, tag and date range (calendar days in India time, both inclusive), or search title, URL, description and note. Clicking a type badge or a `#tag` filters by it. Each card can be edited (note, tags, type) or deleted.
+
+The dashboard calls the API from its server, never from the browser, so `API_KEY` stays off the page. It needs no extra config: it reuses `API_KEY` from `.env`. To run it outside Docker, with the API on localhost:8000:
+
+```bash
+cd web
+npm install
+printf 'API_KEY=change-me\nAPI_BASE_URL=http://localhost:8000\n' > .env.local
+npm run dev
+```
+
+Tags are stored lowercase, without `#`; a link can have up to 20 tags of up to 50 characters.
 
 Backend tests:
 

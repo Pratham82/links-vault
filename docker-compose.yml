@@ -60,6 +60,18 @@ services:
       - api
     restart: unless-stopped
 
+  web:
+    # Next.js dashboard. Talks to the api container server-side, with API_KEY from .env.
+    build: ./web
+    env_file: .env
+    environment:
+      API_BASE_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   pgdata:
   thumbnails:
