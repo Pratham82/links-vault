@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { brandLogoFor, siteIconCandidates } from "@/lib/brands";
 import { dashboardHref, type Filters } from "@/lib/filters";
 import { SOURCE_LABELS, TYPE_LABELS, formatSharedAt, hostOf } from "@/lib/format";
 import type { Link as LinkItem, LinkStatus } from "@/lib/types";
@@ -34,7 +35,12 @@ export function LinkCard({ link, filters }: Props) {
   return (
     <article className="flex w-full flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
       <a href={link.url} target="_blank" rel="noopener noreferrer" tabIndex={-1}>
-        <Thumbnail src={link.image_url} label={site} />
+        <Thumbnail
+          src={link.image_url}
+          site={site}
+          brand={brandLogoFor(link.normalized_url)}
+          iconCandidates={siteIconCandidates(link.normalized_url)}
+        />
       </a>
 
       <div className="flex flex-1 flex-col gap-2 p-4">
