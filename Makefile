@@ -15,8 +15,8 @@ BACKUP_DIR ?= $(HOME)/backups
 s ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up deploy ps logs restart stop backup restore psql health \
-	dashboard dashboard-logs dashboard-stop dev dev-stop test lint format
+.PHONY: help up deploy ps logs restart stop down backup restore psql health \
+	dashboard dashboard-logs dashboard-stop dashboard-down dev dev-stop dev-down test lint format
 
 help: ## List the commands
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  make %-16s %s\n", $$1, $$2}'
@@ -41,6 +41,9 @@ restart: ## Server: restart services (s=bot, or all)
 
 stop: ## Server: stop everything (keeps data)
 	$(SERVER) stop
+
+down: ## Server: stop and remove the containers (keeps data volumes)
+	$(SERVER) down
 
 backup: ## Server: dump the database to ~/backups (BACKUP_DIR=... to override)
 	@mkdir -p $(BACKUP_DIR)
@@ -68,6 +71,9 @@ dashboard-logs: ## Mac: follow the dashboard's logs
 dashboard-stop: ## Mac: stop the dashboard
 	$(DASHBOARD) stop
 
+dashboard-down: ## Mac: stop and remove the dashboard container
+	$(DASHBOARD) down
+
 # ---------------------------------------------------------------- development
 
 dev: ## Dev: run the full stack locally (docker-compose.yml)
@@ -75,6 +81,9 @@ dev: ## Dev: run the full stack locally (docker-compose.yml)
 
 dev-stop: ## Dev: stop the local stack (keeps data)
 	$(DEV) stop
+
+dev-down: ## Dev: stop and remove the local containers (keeps data volumes)
+	$(DEV) down
 
 test: ## Dev: backend tests (needs Postgres, e.g. `docker compose up -d db`)
 	cd backend && uv run pytest

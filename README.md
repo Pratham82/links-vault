@@ -435,6 +435,7 @@ Every service has `restart: unless-stopped`, so containers come back after a cra
 | What's running?                 | `make ps`                                     |
 | Watch logs (Ctrl+C to exit)     | `make logs` or `make logs s=bot`              |
 | Stop everything (keeps data)    | `make stop`                                   |
+| Stop and remove the containers  | `make down` (data volumes are kept)           |
 | Back up now                     | `make backup` (to `~/backups`)                |
 | Restore a backup                | `make restore FILE=~/backups/linkvault-….dump` |
 | SQL shell                       | `make psql`                                   |
