@@ -420,28 +420,53 @@ make dashboard                  # = docker compose -f docker-compose.dashboard.y
 
 The dashboard is at http://localhost:3000. Without Docker, put the same `API_KEY` and `API_BASE_URL=https://links-api.hetzner.pratham82.in` in `web/.env.local` and run `npm run dev`. Send the bot a link while the Mac is asleep; it appears in the dashboard once the Mac wakes.
 
-### Day-to-day on the server
+### Make commands
 
-The `Makefile` at the repo root wraps the long compose commands. Run `make` inside `~/projects/links-vault` to list them (install make with `sudo apt install make` if the server doesn't have it). Pass services with `s=`, e.g. `make logs s=bot`.
+The `Makefile` at the repo root wraps the long compose commands. Run them inside the repo folder; `make` on its own lists them all. Pass services with `s=`, e.g. `make logs s=bot`. If `make` is missing, install it with `sudo apt install make` on the server or `xcode-select --install` on the Mac.
 
-Every service has `restart: unless-stopped`, so containers come back after a crash or a server reboot (as long as Docker starts at boot: `sudo systemctl enable docker`). You only run something when a thing changes:
+Every service has `restart: unless-stopped`, so containers come back by themselves after a crash or a reboot (as long as Docker starts at boot: `sudo systemctl enable docker` on the server). You only run something when a thing changes.
 
-| When                            | Run                                           |
-| ------------------------------- | --------------------------------------------- |
-| Nothing changed / server reboot | nothing                                       |
-| `.env` changed                  | `make up`                                     |
-| New code merged                 | `make deploy` (git pull, rebuild, restart)    |
-| One service misbehaves          | `make restart s=bot` (or api, worker)         |
-| What's running?                 | `make ps`                                     |
-| Watch logs (Ctrl+C to exit)     | `make logs` or `make logs s=bot`              |
-| Stop everything (keeps data)    | `make stop`                                   |
-| Stop and remove the containers  | `make down` (data volumes are kept)           |
-| Back up now                     | `make backup` (to `~/backups`)                |
-| Restore a backup                | `make restore FILE=~/backups/linkvault-….dump` |
-| SQL shell                       | `make psql`                                   |
-| Is the hosted API up?           | `make health`                                 |
+**Server** (Hetzner, `~/projects/links-vault`)
 
-`make deploy` applies new migrations too: the `api` container runs them on startup. Never run `docker compose … down -v`: `-v` deletes the database and thumbnail volumes.
+| Command                                                 | When                                                        |
+| ------------------------------------------------------- | ----------------------------------------------------------- |
+| `make deploy`                                           | New code merged: pulls, rebuilds, restarts, runs migrations |
+| `make up`                                               | After editing `.env`                                        |
+| `make ps`                                               | See what's running                                          |
+| `make logs`                                             | Follow all logs (Ctrl+C to exit)                            |
+| `make logs s=bot`                                       | Follow one service (`api`, `worker`, `bot`, `db`)           |
+| `make restart s=bot`                                    | Restart one service (leave out `s=` to restart all)         |
+| `make stop`                                             | Pause everything (`make up` resumes it)                     |
+| `make down`                                             | Stop and remove the containers (data is kept)               |
+| `make backup`                                           | Back up the database to `~/backups` now                     |
+| `make restore FILE=~/backups/linkvault-2026-09-26.dump` | Replace the database with a backup                          |
+| `make psql`                                             | Open an SQL shell (`\q` to exit)                            |
+| `make health`                                           | Check the API is up                                         |
+
+**Mac Mini** (dashboard)
+
+| Command               | When                                                   |
+| --------------------- | ------------------------------------------------------ |
+| `make dashboard`      | Build and start the dashboard at http://localhost:3000 |
+| `make dashboard-logs` | Follow the dashboard's logs                            |
+| `make dashboard-stop` | Pause it                                               |
+| `make dashboard-down` | Stop and remove it                                     |
+| `make health`         | Check the hosted API from the Mac                      |
+
+After pulling new code on the Mac, run `git pull && make dashboard`. Plain `docker compose down` doesn't stop the dashboard: it runs as its own compose project, so use `make dashboard-down`.
+
+**Development** (either machine)
+
+| Command         | When                                                   |
+| --------------- | ------------------------------------------------------ |
+| `make dev`      | Start the full stack locally (`docker-compose.yml`)    |
+| `make dev-stop` | Pause it                                               |
+| `make dev-down` | Stop and remove its containers (data is kept)          |
+| `make test`     | Backend tests (needs Postgres: `docker compose up -d db`) |
+| `make lint`     | Ruff check and format check                            |
+| `make format`   | Format the backend with ruff                           |
+
+Never run `docker compose … down -v`: `-v` deletes the database and thumbnail volumes, and there's deliberately no make command for it.
 
 Is it up? From anywhere:
 
