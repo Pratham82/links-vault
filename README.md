@@ -2,7 +2,7 @@
 
 A personal inbox for every link I share — from multiple phones, desktop, and my old WhatsApp group — with rich previews, automatic classification, and (later) daily Markdown notes for Obsidian.
 
-Single user. Self-hosted: the backend runs on a Hetzner server, the dashboard on a Mac Mini M4. Not a public product.
+Single user. The backend runs on a Hetzner server; the dashboard runs on Vercel behind a password (and optionally on a Mac Mini M4). Not a public product.
 
 ---
 
@@ -72,11 +72,15 @@ flowchart LR
       db[("Postgres 16<br/>no published port")]
     end
   end
-  subgraph mac["Mac Mini, browse only"]
+  subgraph vercel["Vercel, reachable anywhere"]
+    anywhere["Any browser"] -- "HTTPS, password sign-in" --> vweb["web (Next.js)"]
+  end
+  subgraph mac["Mac Mini, optional"]
     browser["Browser"] -- "localhost:3000" --> web["web (Next.js)<br/>docker-compose.dashboard.yml"]
   end
   bot -- "long-polls, outbound only" --> tg
   bot -- "POST /links" --> api
+  vweb -- "HTTPS + X-API-Key" --> nginx
   web -- "HTTPS + X-API-Key" --> nginx
   nginx -- "127.0.0.1:8200" --> api
   api -- SQL --> db
@@ -85,9 +89,9 @@ flowchart LR
   cron -.-> db
 ```
 
-`db`, `api`, `worker` and `bot` run on a Hetzner server (`docker-compose.server.yml`), so capture keeps working when the Mac sleeps. Only the API is reachable from outside, over HTTPS at `https://links-api.hetzner.pratham82.in`, behind the host's NGINX and the `X-API-Key` header. The dashboard runs on the Mac (`docker-compose.dashboard.yml`) and calls that URL from its server side, so the key never reaches the browser.
+`db`, `api`, `worker` and `bot` run on a Hetzner server (`docker-compose.server.yml`), so capture keeps working when the Mac sleeps. Only the API is reachable from outside, over HTTPS at `https://links-api.hetzner.pratham82.in`, behind the host's NGINX and the `X-API-Key` header. The dashboard runs on Vercel, so it works from any device, even while the Mac sleeps. It calls that URL from its server side, so the key never reaches the browser, and every page needs the dashboard password (see [Sign-in](#dashboard)). The same dashboard can also run on the Mac (`docker-compose.dashboard.yml`).
 
-Tailscale is no longer part of the setup. It's only useful if you want to open the Mac's dashboard from another device, and then only while the Mac is awake. See [Deployment](#deployment) for the setup.
+Tailscale is not part of the setup: the Vercel dashboard is reachable from anywhere. See [Deployment](#deployment) for the setup.
 
 ---
 
@@ -366,12 +370,13 @@ Tests need a real Postgres at `DATABASE_URL` (default `postgresql+asyncpg://link
 
 ## Deployment
 
-The backend runs on the Hetzner server so the Telegram bot and worker keep going while the Mac sleeps. The dashboard stays on the Mac and calls the hosted API.
+The backend runs on the Hetzner server so the Telegram bot and worker keep going while the Mac sleeps. The dashboard runs on Vercel (and optionally on the Mac) and calls the hosted API.
 
 | Where       | Compose file                   | Services                     | Reachable at                                            |
 | ----------- | ------------------------------ | ---------------------------- | ------------------------------------------------------- |
 | Hetzner     | `docker-compose.server.yml`    | `db`, `api`, `worker`, `bot` | `https://links-api.hetzner.pratham82.in` (via NGINX)    |
-| Mac Mini    | `docker-compose.dashboard.yml` | `web`                        | http://localhost:3000                                   |
+| Vercel      | none (`web/` built by Vercel)  | `web`                        | your `*.vercel.app` URL, password sign-in               |
+| Mac Mini    | `docker-compose.dashboard.yml` | `web` (optional)             | http://localhost:3000                                   |
 | Development | `docker-compose.yml`           | everything                   | localhost                                               |
 
 On the server only the API is published, and only on `127.0.0.1:${API_HOST_PORT:-8200}`, so the host's NGINX is the one way in from the internet. The database has no published port. The bot uses long polling, so it needs no inbound port either. `DOCS_ENABLED=false` hides `/docs` and `/openapi.json`; every other route except `/health` needs `X-API-Key`.
@@ -441,7 +446,7 @@ docker compose -f docker-compose.server.yml logs -f api bot   # migrations are a
 
 `-Fc` writes Postgres's compressed "custom" format, which `pg_restore` reads; `--clean --if-exists` drops anything already there first and `--no-owner` ignores the Mac's role names.
 
-### 4. Mac: dashboard only
+### 4. Mac: dashboard (optional)
 
 ```bash
 docker compose down             # stop the full local stack (frees port 3000; volumes are kept as a fallback)
@@ -451,6 +456,32 @@ make dashboard                  # = docker compose -f docker-compose.dashboard.y
 ```
 
 The dashboard is at http://localhost:3000. Without Docker, put the same `API_KEY`, `DASHBOARD_PASSWORD` and `API_BASE_URL=https://links-api.hetzner.pratham82.in` in `web/.env.local` and run `npm run dev`. Send the bot a link while the Mac is asleep; it appears in the dashboard once the Mac wakes.
+
+### 5. Vercel: dashboard from anywhere
+
+The Vercel dashboard calls the Hetzner API directly, so it works from any device without Tailscale and while the Mac is asleep.
+
+1. Import the GitHub repo in Vercel and set **Root Directory** to `web`. Vercel detects Next.js; no build settings are needed.
+2. Add these environment variables (Project → Settings → Environment Variables):
+
+   | Variable             | Value                                             | Sensitive |
+   | -------------------- | ------------------------------------------------- | --------- |
+   | `API_KEY`            | The server's `API_KEY`                            | yes       |
+   | `API_BASE_URL`       | `https://links-api.hetzner.pratham82.in`          | no        |
+   | `DASHBOARD_PASSWORD` | A long random password: `openssl rand -base64 24` | yes       |
+
+   The name is `API_BASE_URL`, not `DASHBOARD_API_BASE_URL` (that one is only for the Mac's compose file). No quotes or spaces around the values.
+3. Deploy. Vercel reads environment variables only when it builds, so **redeploy after changing any of them**.
+4. Open the URL: it should send you to `/login`, and your links load after signing in.
+
+Vercel deploys every push to `master` to production, so merging a PR ships the dashboard.
+
+Keep it safe:
+
+- **Scope `API_KEY` and `DASHBOARD_PASSWORD` to Production**, or turn on Deployment Protection for previews. Vercel builds a preview URL for every branch and PR, and with the secrets available there each preview is another working copy of the dashboard.
+- **The password is the only lock on the dashboard.** A wrong guess waits one second, but nothing stops many guesses in parallel, so use a long random password (keep it in a password manager). A Vercel Firewall rate-limit rule on `/login` helps further, if your plan has one.
+- **Sessions last 30 days per browser.** Sign out on shared devices. To sign out everywhere (e.g. a lost phone), change `DASHBOARD_PASSWORD` in Vercel and redeploy.
+- **Troubleshooting:** "API_BASE_URL must be the API's full URL" means that variable is blank or missing `https://`. "Missing or invalid X-API-Key header" means `API_KEY` doesn't match the server's.
 
 ### Make commands
 
@@ -475,7 +506,7 @@ Every service has `restart: unless-stopped`, so containers come back by themselv
 | `make psql`                                             | Open an SQL shell (`\q` to exit)                            |
 | `make health`                                           | Check the API is up                                         |
 
-The server's compose file has no `web` service, so these commands only ever touch the backend; the dashboard runs on the Mac.
+The server's compose file has no `web` service, so these commands only ever touch the backend; the dashboard runs on Vercel or the Mac.
 
 **Mac Mini** (dashboard)
 
@@ -515,7 +546,7 @@ On the server itself, `curl localhost:8200/health` skips NGINX, which tells you 
 
 ### Updating and backups
 
-On the server, `make deploy` ships the latest code. On the Mac, `git pull && make dashboard` rebuilds the dashboard.
+On the server, `make deploy` ships the latest code. Vercel redeploys the dashboard on every push to `master`; on the Mac, `git pull && make dashboard` rebuilds it.
 
 The data now lives only on the server, so back it up nightly with `crontab -e`. Cron uses the server's clock, which is UTC, so `45 21 * * *` is 03:15 in India:
 
