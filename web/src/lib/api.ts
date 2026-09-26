@@ -23,7 +23,16 @@ function config(): { baseUrl: string; apiKey: string } {
   if (!apiKey) {
     throw new ApiError(500, "API_KEY is not set for the dashboard");
   }
-  const baseUrl = (process.env.API_BASE_URL ?? "http://localhost:8000").replace(/\/+$/, "");
+  // Unset means local development. Set but empty or not a URL is a config mistake (e.g. a
+  // blank value in Vercel's settings), so say so instead of failing with a confusing fetch error.
+  const raw = process.env.API_BASE_URL ?? "http://localhost:8000";
+  const baseUrl = raw.trim().replace(/\/+$/, "");
+  if (!URL.canParse(baseUrl) || !/^https?:\/\//.test(baseUrl)) {
+    throw new ApiError(
+      500,
+      `API_BASE_URL must be the API's full URL, like https://links-api.example.com (got "${raw}")`,
+    );
+  }
   return { baseUrl, apiKey };
 }
 

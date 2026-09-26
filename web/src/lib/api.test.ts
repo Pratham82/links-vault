@@ -64,6 +64,24 @@ describe("listLinks", () => {
     await expect(listLinks({ page: 1 })).rejects.toThrow("API_KEY is not set");
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it.each(["", "   ", "/", "links-api.example.com"])(
+    "explains a blank or partial API_BASE_URL (%j)",
+    async (value) => {
+      vi.stubEnv("API_BASE_URL", value);
+      await expect(listLinks({ page: 1 })).rejects.toThrow(
+        "API_BASE_URL must be the API's full URL",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("tolerates stray whitespace around API_BASE_URL", async () => {
+    vi.stubEnv("API_BASE_URL", " https://api.test/ ");
+    fetchMock.mockResolvedValue(json({ items: [], total: 0, limit: 48, offset: 0 }));
+    await listLinks({ page: 1 });
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.test/links?limit=48&offset=0");
+  });
 });
 
 describe("updateLink and deleteLink", () => {
