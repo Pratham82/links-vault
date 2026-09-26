@@ -7,6 +7,7 @@ whole project; this is the `web` service.
 nvm use            # Node 24 LTS, from .nvmrc (the Docker image and CI use the same)
 npm install
 # API_KEY must match the API's; API_BASE_URL defaults to http://localhost:8000.
+# To use the hosted API instead: API_BASE_URL=https://links-api.hetzner.pratham82.in
 printf 'API_KEY=change-me\nAPI_BASE_URL=http://localhost:8000\n' > .env.local
 npm run dev        # http://localhost:3000
 

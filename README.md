@@ -2,7 +2,7 @@
 
 A personal inbox for every link I share — from multiple phones, desktop, and my old WhatsApp group — with rich previews, automatic classification, and (later) daily Markdown notes for Obsidian.
 
-Single user. Self-hosted on a Mac Mini M4. Not a public product.
+Single user. Self-hosted: the backend runs on a Hetzner server, the dashboard on a Mac Mini M4. Not a public product.
 
 ---
 
@@ -61,7 +61,7 @@ Daily .md export → Obsidian vault
 | `bot`    | Telegram bot using **long polling** (no public URL needed); calls the API     |
 | `web`    | Next.js dashboard                                                             |
 
-Remote access from other devices is via Tailscale — nothing is exposed to the public internet.
+In production `db`, `api`, `worker` and `bot` run on a Hetzner server (`docker-compose.server.yml`), so capture keeps working when the Mac sleeps. Only the API is reachable from outside, over HTTPS at `https://links-api.hetzner.pratham82.in`, behind the host's NGINX and the `X-API-Key` header. The dashboard runs on the Mac (`docker-compose.dashboard.yml`) and calls that URL from its server side. See [Deployment](#deployment).
 
 ---
 
@@ -256,6 +256,7 @@ See `.env.example`:
 ```
 DATABASE_URL=postgresql+asyncpg://linkvault:linkvault@db:5432/linkvault
 API_KEY=change-me
+DOCS_ENABLED=true                    # false on the public server (no /docs, /openapi.json)
 API_BASE_URL=http://localhost:8000   # bot → API outside Docker; compose sets http://api:8000
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
@@ -264,6 +265,9 @@ WORKER_POLL_SECONDS=5
 THUMBNAIL_DIR=data/thumbnails  # compose sets /data/thumbnails (shared volume)
 IMPORT_PREVIEW_CONCURRENCY=2
 IMPORT_DOMAIN_DELAY_SECONDS=5
+POSTGRES_PASSWORD=                   # server only, see Deployment
+API_HOST_PORT=8200                   # server only: loopback port NGINX proxies to
+DASHBOARD_API_BASE_URL=https://links-api.hetzner.pratham82.in  # Mac only
 TAGGER=none            # none | ollama | api
 OLLAMA_URL=http://host.docker.internal:11434
 OBSIDIAN_VAULT_PATH=
@@ -328,6 +332,98 @@ Tests need a real Postgres at `DATABASE_URL` (default `postgresql+asyncpg://link
 
 - `linkvault_test` is created by `docker/postgres-init/` only when the `pgdata` volume is first created. For an older volume, run `docker compose down -v` once (this deletes local data) or `docker compose exec db createdb -U linkvault linkvault_test`.
 - If port 5432 is taken (e.g. a Homebrew Postgres), set `POSTGRES_PORT=5433` in `.env` and point `DATABASE_URL` at that port.
+
+## Deployment
+
+The backend runs on the Hetzner server so the Telegram bot and worker keep going while the Mac sleeps. The dashboard stays on the Mac and calls the hosted API.
+
+| Where       | Compose file                   | Services                     | Reachable at                                            |
+| ----------- | ------------------------------ | ---------------------------- | ------------------------------------------------------- |
+| Hetzner     | `docker-compose.server.yml`    | `db`, `api`, `worker`, `bot` | `https://links-api.hetzner.pratham82.in` (via NGINX)    |
+| Mac Mini    | `docker-compose.dashboard.yml` | `web`                        | http://localhost:3000                                   |
+| Development | `docker-compose.yml`           | everything                   | localhost                                               |
+
+On the server only the API is published, and only on `127.0.0.1:${API_HOST_PORT:-8200}`, so the host's NGINX is the one way in from the internet. The database has no published port. The bot uses long polling, so it needs no inbound port either. `DOCS_ENABLED=false` hides `/docs` and `/openapi.json`; every other route except `/health` needs `X-API-Key`.
+
+### 1. Server: start the backend
+
+```bash
+git clone https://github.com/Pratham82/links-vault.git && cd links-vault
+cp .env.example .env
+# Edit .env:
+#   API_KEY=<openssl rand -hex 32>
+#   POSTGRES_PASSWORD=<openssl rand -hex 24>
+#   DATABASE_URL=postgresql+asyncpg://linkvault:<same password>@db:5432/linkvault
+#   TELEGRAM_BOT_TOKEN / TELEGRAM_ALLOWED_USER_IDS as on the Mac
+docker compose -f docker-compose.server.yml up -d --build db   # just the database for now
+```
+
+If you are migrating existing data (step 3), leave the other services stopped until it is restored. Otherwise start everything: `docker compose -f docker-compose.server.yml up -d --build`, then `curl localhost:8200/health`.
+
+### 2. Server: NGINX and HTTPS
+
+1. Add a DNS `A` record for `links-api.hetzner.pratham82.in` pointing at the server.
+2. `deploy/nginx/links-vault.conf` holds two `server` blocks to paste into the `http {}` block of `/etc/nginx/nginx.conf`. The 443 block needs a certificate that already covers the new name, so add them in this order:
+   ```bash
+   # a) paste only the port-80 block, then
+   sudo nginx -t && sudo systemctl reload nginx
+   # b) add links-api.* to the existing certificate
+   sudo certbot --nginx --expand -d hetzner.pratham82.in -d api.hetzner.pratham82.in \
+     -d links-api.hetzner.pratham82.in
+   # c) paste the 443 block, then
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+3. Check: `curl https://links-api.hetzner.pratham82.in/health` returns `{"status":"ok",...}` once the API is up, `/docs` is 404 and `/links` without a key is 401.
+
+The block raises `client_max_body_size` to 26 MB so WhatsApp exports (up to 25 MB) aren't rejected by NGINX. If you change `API_HOST_PORT`, change its `proxy_pass` too.
+
+### 3. Move existing data from the Mac
+
+Stop capture on the Mac first. Two bots long-polling the same token make Telegram reject one of them (409 Conflict), and anything saved after the dump would be lost.
+
+On the Mac, in the repo:
+
+```bash
+docker compose stop bot worker api
+docker compose exec -T db pg_dump -U linkvault -Fc linkvault > linkvault.dump
+docker compose run --rm --no-deps -T worker tar czf - -C /data/thumbnails . > thumbnails.tgz
+scp linkvault.dump thumbnails.tgz <server>:links-vault/
+```
+
+On the server, in `links-vault/` (with only `db` running, from step 1):
+
+```bash
+docker compose -f docker-compose.server.yml exec -T db \
+  pg_restore -U linkvault -d linkvault --clean --if-exists --no-owner < linkvault.dump
+docker compose -f docker-compose.server.yml run --rm --no-deps -T worker \
+  tar xzf - -C /data/thumbnails < thumbnails.tgz
+docker compose -f docker-compose.server.yml up -d --build
+docker compose -f docker-compose.server.yml logs -f api bot   # migrations are already at head
+```
+
+`-Fc` writes Postgres's compressed "custom" format, which `pg_restore` reads; `--clean --if-exists` drops anything already there first and `--no-owner` ignores the Mac's role names.
+
+### 4. Mac: dashboard only
+
+```bash
+docker compose down             # stop the full local stack (frees port 3000; volumes are kept as a fallback)
+# .env on the Mac: API_KEY=<the server's key>, DASHBOARD_API_BASE_URL=https://links-api.hetzner.pratham82.in
+docker compose -f docker-compose.dashboard.yml up -d --build
+```
+
+The dashboard is at http://localhost:3000. Without Docker, put the same `API_KEY` and `API_BASE_URL=https://links-api.hetzner.pratham82.in` in `web/.env.local` and run `npm run dev`. Send the bot a link while the Mac is asleep; it appears in the dashboard once the Mac wakes.
+
+### Updating and backups
+
+Deploy a new version on the server with `git pull && docker compose -f docker-compose.server.yml up -d --build`; the `api` container applies new migrations on startup. Rebuild the dashboard on the Mac the same way with `docker-compose.dashboard.yml`.
+
+The data now lives only on the server, so dump it nightly, e.g. with a crontab entry (`crontab -e`):
+
+```
+15 3 * * * cd ~/links-vault && docker compose -f docker-compose.server.yml exec -T db pg_dump -U linkvault -Fc linkvault > ~/backups/linkvault-$(date +\%F).dump
+```
+
+Copy those dumps off the server now and then (or enable Hetzner backups).
 
 ## Screenshots
 

@@ -1,0 +1,69 @@
+# The always-on half of Link Vault, for the Hetzner server: Postgres, API, worker and bot.
+# The dashboard runs elsewhere (docker-compose.dashboard.yml) and calls the API over HTTPS.
+#
+#   docker compose -f docker-compose.server.yml up -d --build
+#
+# The host's NGINX terminates TLS and proxies to the API on 127.0.0.1:${API_HOST_PORT}
+# (see deploy/nginx/links-vault.conf). Nothing else is published.
+name: links-vault
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: linkvault
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: linkvault
+    # No ports: only the containers on this compose network can reach the database.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U linkvault -d linkvault"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    env_file: .env
+    environment:
+      THUMBNAIL_DIR: /data/thumbnails
+      # The API is public behind NGINX, so don't advertise its schema.
+      DOCS_ENABLED: "false"
+    ports:
+      # Loopback only: NGINX on the host reaches it, the internet can't skip NGINX.
+      - "127.0.0.1:${API_HOST_PORT:-8200}:8000"
+    volumes:
+      - thumbnails:/data/thumbnails
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    env_file: .env
+    command: ["python", "-m", "app.worker"]
+    environment:
+      THUMBNAIL_DIR: /data/thumbnails
+    volumes:
+      - thumbnails:/data/thumbnails
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  bot:
+    # Long polling: the bot calls Telegram, Telegram never calls us, so it needs no port.
+    build: ./backend
+    env_file: .env
+    command: ["python", "-m", "app.bot.telegram"]
+    environment:
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  thumbnails:
