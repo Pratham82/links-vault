@@ -456,8 +456,8 @@ Every service has `restart: unless-stopped`, so containers come back by themselv
 
 | Command                                                 | When                                                        |
 | ------------------------------------------------------- | ----------------------------------------------------------- |
-| `make deploy`                                           | New code merged: pulls, rebuilds, restarts, runs migrations |
-| `make up`                                               | After editing `.env`                                        |
+| `make deploy`                                           | New code merged: rebuilds the backend, runs migrations      |
+| `make up`                                               | Start the backend (db, api, worker, bot); also after `.env` |
 | `make ps`                                               | See what's running                                          |
 | `make logs`                                             | Follow all logs (Ctrl+C to exit)                            |
 | `make logs s=bot`                                       | Follow one service (`api`, `worker`, `bot`, `db`)           |
@@ -468,6 +468,8 @@ Every service has `restart: unless-stopped`, so containers come back by themselv
 | `make restore FILE=~/backups/linkvault-2026-09-26.dump` | Replace the database with a backup                          |
 | `make psql`                                             | Open an SQL shell (`\q` to exit)                            |
 | `make health`                                           | Check the API is up                                         |
+
+The server's compose file has no `web` service, so these commands only ever touch the backend; the dashboard runs on the Mac.
 
 **Mac Mini** (dashboard)
 

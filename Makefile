@@ -23,10 +23,10 @@ help: ## List the commands
 
 # ---------------------------------------------------------------- server (Hetzner)
 
-up: ## Server: start everything / apply .env changes
+up: ## Server: start the backend (db, api, worker, bot) / apply .env changes
 	$(SERVER) up -d
 
-deploy: ## Server: pull the latest code, rebuild and restart
+deploy: ## Server: pull, rebuild and restart the backend (no web)
 	git pull --ff-only
 	$(SERVER) up -d --build
 
