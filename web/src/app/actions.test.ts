@@ -89,7 +89,7 @@ describe("editing needs a session", () => {
 
 describe("signIn / signOut", () => {
   it("sets an httpOnly session cookie for the right password", async () => {
-    await expect(signIn({ ok: false }, passwordForm("hunter2"))).rejects.toThrow("NEXT_REDIRECT");
+    await expect(signIn({ ok: false }, passwordForm("hunter2"))).rejects.toThrow(/NEXT_REDIRECT/);
     expect(cookieStore.set).toHaveBeenCalledWith(
       SESSION_COOKIE,
       expect.any(String),
@@ -116,7 +116,7 @@ describe("signIn / signOut", () => {
 
   it("signOut clears the cookie", async () => {
     jar.set(SESSION_COOKIE, createSessionToken()!);
-    await expect(signOut()).rejects.toThrow("NEXT_REDIRECT");
+    await expect(signOut()).rejects.toThrow(/NEXT_REDIRECT/);
     expect(jar.has(SESSION_COOKIE)).toBe(false);
   });
 });

@@ -6,13 +6,13 @@ import { LinkCard } from "@/components/LinkCard";
 import { LinkGrid, LinkGridItem } from "@/components/LinkGrid";
 import { Pagination } from "@/components/Pagination";
 import { ApiError, listLinks } from "@/lib/api";
-import { isSignedIn } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import { PAGE_SIZE, dashboardHref, hasActiveFilters, parseFilters } from "@/lib/filters";
 import type { LinkPage } from "@/lib/types";
 
 export default async function Home(props: PageProps<"/">) {
+  await requireSession();
   const filters = parseFilters(await props.searchParams);
-  const canEdit = await isSignedIn();
 
   let page: LinkPage;
   try {
@@ -44,7 +44,7 @@ export default async function Home(props: PageProps<"/">) {
         <LinkGrid>
           {page.items.map((link, index) => (
             <LinkGridItem key={link.id} index={index}>
-              <LinkCard link={link} filters={filters} canEdit={canEdit} />
+              <LinkCard link={link} filters={filters} />
             </LinkGridItem>
           ))}
         </LinkGrid>

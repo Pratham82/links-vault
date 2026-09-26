@@ -73,7 +73,7 @@ export async function removeLink(linkId: string): Promise<ActionResult> {
 
 export async function signIn(_previous: ActionResult, form: FormData): Promise<ActionResult> {
   if (!signInConfigured()) {
-    return { ok: false, error: "Sign-in is off: set DASHBOARD_PASSWORD for the dashboard" };
+    return { ok: false, error: "Sign-in isn't set up: set DASHBOARD_PASSWORD for the dashboard" };
   }
   if (!passwordMatches(String(form.get("password") ?? ""))) {
     await new Promise((resolve) => setTimeout(resolve, FAILED_SIGN_IN_DELAY_MS));
@@ -86,5 +86,5 @@ export async function signIn(_previous: ActionResult, form: FormData): Promise<A
 
 export async function signOut(): Promise<void> {
   await endSession();
-  redirect("/");
+  redirect("/login");
 }

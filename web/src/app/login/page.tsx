@@ -14,15 +14,15 @@ export default async function LoginPage() {
       <div>
         <h1 className="font-heading text-lg font-semibold">Sign in</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Signing in lets you edit and delete links.
+          Your links are private. Enter the dashboard password to see them.
         </p>
       </div>
       {signInConfigured() ? (
         <LoginForm />
       ) : (
         <p className="text-sm text-destructive">
-          Sign-in is off. Set <code>DASHBOARD_PASSWORD</code> in the dashboard&apos;s environment
-          and restart it.
+          Sign-in isn&apos;t set up. Set <code>DASHBOARD_PASSWORD</code> in the dashboard&apos;s
+          environment and restart it.
         </p>
       )}
     </div>

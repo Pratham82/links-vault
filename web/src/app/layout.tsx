@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import Link from "next/link";
-import { LibraryBig, LogIn, LogOut } from "lucide-react";
+import { LibraryBig, LogOut } from "lucide-react";
 
 import { signOut } from "@/app/actions";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import { isSignedIn } from "@/lib/session";
 import { cn } from "@/lib/utils";
 
@@ -35,24 +35,13 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
               </span>
               Link Vault
             </Link>
-            {signedIn ? (
+            {signedIn && (
               <form action={signOut}>
                 <Button type="submit" variant="ghost" size="sm" className="text-muted-foreground">
                   <LogOut data-icon="inline-start" aria-hidden />
                   Sign out
                 </Button>
               </form>
-            ) : (
-              <Link
-                href="/login"
-                className={cn(
-                  buttonVariants({ variant: "ghost", size: "sm" }),
-                  "text-muted-foreground",
-                )}
-              >
-                <LogIn data-icon="inline-start" aria-hidden />
-                Sign in
-              </Link>
             )}
           </div>
         </header>

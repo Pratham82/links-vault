@@ -1,6 +1,6 @@
 // The dashboard's sign-in: one password (DASHBOARD_PASSWORD), one signed cookie.
 //
-// Browsing stays open; editing and deleting need a session. The cookie holds only an expiry
+// Every page, thumbnail and server action needs a session. The cookie holds only an expiry
 // time and an HMAC signature of it, so the server needs no session table: a cookie is valid
 // if the signature matches and the time hasn't passed. The signing key is derived from
 // API_KEY (a long random secret the browser never sees) and the password, so changing either
@@ -10,6 +10,7 @@ import "server-only";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 import { cookies, headers } from "next/headers";
+import { redirect } from "next/navigation";
 
 export const SESSION_COOKIE = "lv_session";
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
@@ -65,6 +66,11 @@ export function verifySessionToken(
 export async function isSignedIn(): Promise<boolean> {
   const cookieStore = await cookies();
   return verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value);
+}
+
+/** For pages: send anyone without a valid session to the sign-in page. */
+export async function requireSession(): Promise<void> {
+  if (!(await isSignedIn())) redirect("/login");
 }
 
 /** Set the session cookie. Only works in a server action or route handler. */
