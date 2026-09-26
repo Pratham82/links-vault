@@ -348,6 +348,7 @@ On the server only the API is published, and only on `127.0.0.1:${API_HOST_PORT:
 ### 1. Server: start the backend
 
 ```bash
+mkdir -p ~/projects && cd ~/projects
 git clone https://github.com/Pratham82/links-vault.git && cd links-vault
 cp .env.example .env
 # Edit .env:
@@ -358,21 +359,27 @@ cp .env.example .env
 docker compose -f docker-compose.server.yml up -d --build db   # just the database for now
 ```
 
+The password inside `DATABASE_URL` must be exactly `POSTGRES_PASSWORD`. Postgres only reads `POSTGRES_PASSWORD` when it first creates the `pgdata` volume, so changing it later doesn't change the database. If the API logs `InvalidPasswordError: password authentication failed for user "linkvault"`, make the two `.env` values match, then set the database to that password (keeps your data):
+
+```bash
+docker compose -f docker-compose.server.yml exec db \
+  psql -U linkvault -d linkvault -c "ALTER USER linkvault PASSWORD '<POSTGRES_PASSWORD>'"
+docker compose -f docker-compose.server.yml up -d
+```
+
 If you are migrating existing data (step 3), leave the other services stopped until it is restored. Otherwise start everything: `docker compose -f docker-compose.server.yml up -d --build`, then `curl localhost:8200/health`.
 
 ### 2. Server: NGINX and HTTPS
 
 1. Add a DNS `A` record for `links-api.hetzner.pratham82.in` pointing at the server.
-2. `deploy/nginx/links-vault.conf` holds two `server` blocks to paste into the `http {}` block of `/etc/nginx/nginx.conf`. The 443 block needs a certificate that already covers the new name, so add them in this order:
+2. Paste both `server` blocks from `deploy/nginx/links-vault.conf` into the `http {}` block of `/etc/nginx/nginx.conf`, then add the new name to the existing certificate:
    ```bash
-   # a) paste only the port-80 block, then
    sudo nginx -t && sudo systemctl reload nginx
-   # b) add links-api.* to the existing certificate
-   sudo certbot --nginx --expand -d hetzner.pratham82.in -d api.hetzner.pratham82.in \
+   sudo certbot certonly --nginx --expand -d hetzner.pratham82.in -d api.hetzner.pratham82.in \
      -d links-api.hetzner.pratham82.in
-   # c) paste the 443 block, then
-   sudo nginx -t && sudo systemctl reload nginx
+   sudo systemctl reload nginx
    ```
+   The 443 block reuses the `hetzner.pratham82.in` certificate files, which already exist, so `nginx -t` passes straight away; the new name only shows a certificate warning until certbot has expanded the certificate. `certonly` renews the certificate without rewriting `nginx.conf`, so the live file stays the same as your reference copy.
 3. Check: `curl https://links-api.hetzner.pratham82.in/health` returns `{"status":"ok",...}` once the API is up, `/docs` is 404 and `/links` without a key is 401.
 
 The block raises `client_max_body_size` to 26 MB so WhatsApp exports (up to 25 MB) aren't rejected by NGINX. If you change `API_HOST_PORT`, change its `proxy_pass` too.
@@ -387,10 +394,10 @@ On the Mac, in the repo:
 docker compose stop bot worker api
 docker compose exec -T db pg_dump -U linkvault -Fc linkvault > linkvault.dump
 docker compose run --rm --no-deps -T worker tar czf - -C /data/thumbnails . > thumbnails.tgz
-scp linkvault.dump thumbnails.tgz <server>:links-vault/
+scp linkvault.dump thumbnails.tgz <server>:projects/links-vault/
 ```
 
-On the server, in `links-vault/` (with only `db` running, from step 1):
+On the server, in `~/projects/links-vault` (with only `db` running, from step 1):
 
 ```bash
 docker compose -f docker-compose.server.yml exec -T db \
@@ -413,14 +420,51 @@ docker compose -f docker-compose.dashboard.yml up -d --build
 
 The dashboard is at http://localhost:3000. Without Docker, put the same `API_KEY` and `API_BASE_URL=https://links-api.hetzner.pratham82.in` in `web/.env.local` and run `npm run dev`. Send the bot a link while the Mac is asleep; it appears in the dashboard once the Mac wakes.
 
+### Day-to-day on the server
+
+Two aliases for `~/.bashrc` (then `source ~/.bashrc`) save typing the compose file every time:
+
+```bash
+alias lv='docker compose -f ~/projects/links-vault/docker-compose.server.yml'
+alias lv-deploy='cd ~/projects/links-vault && git pull && lv up -d --build'
+```
+
+`lv` is the compose command, so it takes a subcommand (`lv ps`, `lv logs`, …). `lv-deploy` pulls the latest code, rebuilds the images and restarts whatever changed; the `api` container applies new migrations on startup.
+
+Every service has `restart: unless-stopped`, so containers come back after a crash or a server reboot (as long as Docker starts at boot: `sudo systemctl enable docker`). You only run something when a thing changes:
+
+| When                            | Run                               |
+| ------------------------------- | --------------------------------- |
+| Nothing changed / server reboot | nothing                           |
+| `.env` changed                  | `lv up -d`                        |
+| New code merged                 | `lv-deploy`                       |
+| One service misbehaves          | `lv restart bot` (or api, worker) |
+| What's running?                 | `lv ps`                           |
+| Watch logs (Ctrl+C to exit)     | `lv logs -f api bot worker`       |
+| Last lines of one service       | `lv logs --tail 50 bot`           |
+| Stop everything (keeps data)    | `lv stop`                         |
+
+Never run `lv down -v`: `-v` deletes the database and thumbnail volumes.
+
+Is it up? From anywhere:
+
+```bash
+curl https://links-api.hetzner.pratham82.in/health                               # {"status":"ok","database":"ok"}
+curl -s -o /dev/null -w '%{http_code}\n' https://links-api.hetzner.pratham82.in/docs    # 404 (docs off)
+curl -s -o /dev/null -w '%{http_code}\n' https://links-api.hetzner.pratham82.in/links   # 401 (no key)
+curl -s -H "X-API-Key: $API_KEY" 'https://links-api.hetzner.pratham82.in/links?limit=1'  # newest link
+```
+
+On the server itself, `curl localhost:8200/health` skips NGINX, which tells you whether a failure is the API or the proxy.
+
 ### Updating and backups
 
-Deploy a new version on the server with `git pull && docker compose -f docker-compose.server.yml up -d --build`; the `api` container applies new migrations on startup. Rebuild the dashboard on the Mac the same way with `docker-compose.dashboard.yml`.
+On the server, `lv-deploy` ships the latest code. Rebuild the dashboard on the Mac with `git pull && docker compose -f docker-compose.dashboard.yml up -d --build`.
 
-The data now lives only on the server, so dump it nightly, e.g. with a crontab entry (`crontab -e`):
+The data now lives only on the server, so dump it nightly. Run `mkdir -p ~/backups` once, then add this with `crontab -e` (cron doesn't read `~/.bashrc`, so it spells out the command):
 
 ```
-15 3 * * * cd ~/links-vault && docker compose -f docker-compose.server.yml exec -T db pg_dump -U linkvault -Fc linkvault > ~/backups/linkvault-$(date +\%F).dump
+15 3 * * * cd ~/projects/links-vault && docker compose -f docker-compose.server.yml exec -T db pg_dump -U linkvault -Fc linkvault > ~/backups/linkvault-$(date +\%F).dump
 ```
 
 Copy those dumps off the server now and then (or enable Hetzner backups).
