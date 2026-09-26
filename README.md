@@ -34,19 +34,15 @@ Today I dump links from X, Instagram, YouTube, GitHub, articles, etc. into a Wha
 
 ## Architecture
 
-```
-Phones / Desktop
-   │  share → Telegram bot          (live capture)
-   │  bookmarklet / extension       (desktop, later)
-   │  WhatsApp export upload        (history backfill)
-   ▼
-FastAPI  ── POST /links, POST /import/whatsapp ──► Postgres
-   │
-   └─ worker: normalize → dedupe → preview → classify
-   ▼
-Next.js dashboard (browse, filter, search)
-   ▼
-Daily .md export → Obsidian vault
+```mermaid
+flowchart TD
+  tg["Telegram bot<br/>live capture"] --> api
+  ext["Bookmarklet / extension<br/>later"] -.-> api
+  wa["WhatsApp export upload<br/>history backfill"] --> api
+  api["FastAPI<br/>POST /links, POST /import/whatsapp"] --> db[("Postgres")]
+  db <--> worker["worker<br/>normalize, dedupe, preview, classify"]
+  db --> dash["Next.js dashboard<br/>browse, filter, search"]
+  db -.-> obs["Daily .md export to Obsidian<br/>later"]
 ```
 
 **Principle:** the API is channel-agnostic. Every input (Telegram, desktop, import, future WhatsApp) is an adapter that calls the same ingestion service.
@@ -61,7 +57,37 @@ Daily .md export → Obsidian vault
 | `bot`    | Telegram bot using **long polling** (no public URL needed); calls the API     |
 | `web`    | Next.js dashboard                                                             |
 
-In production `db`, `api`, `worker` and `bot` run on a Hetzner server (`docker-compose.server.yml`), so capture keeps working when the Mac sleeps. Only the API is reachable from outside, over HTTPS at `https://links-api.hetzner.pratham82.in`, behind the host's NGINX and the `X-API-Key` header. The dashboard runs on the Mac (`docker-compose.dashboard.yml`) and calls that URL from its server side. See [Deployment](#deployment).
+### Where it runs
+
+```mermaid
+flowchart LR
+  phone["Phone / desktop"] -- share --> tg["Telegram"]
+  subgraph hetzner["Hetzner server, always on"]
+    nginx["NGINX<br/>TLS, links-api.hetzner.pratham82.in"]
+    cron["cron 21:45 UTC<br/>make backup"]
+    subgraph compose["docker-compose.server.yml"]
+      bot["bot<br/>long polling"]
+      api["api (FastAPI)<br/>checks X-API-Key"]
+      worker["worker<br/>enriches pending links"]
+      db[("Postgres 16<br/>no published port")]
+    end
+  end
+  subgraph mac["Mac Mini, browse only"]
+    browser["Browser"] -- "localhost:3000" --> web["web (Next.js)<br/>docker-compose.dashboard.yml"]
+  end
+  bot -- "long-polls, outbound only" --> tg
+  bot -- "POST /links" --> api
+  web -- "HTTPS + X-API-Key" --> nginx
+  nginx -- "127.0.0.1:8200" --> api
+  api -- SQL --> db
+  worker -- "claims pending, SKIP LOCKED" --> db
+  worker -- "fetch previews" --> sites["Linked sites"]
+  cron -.-> db
+```
+
+`db`, `api`, `worker` and `bot` run on a Hetzner server (`docker-compose.server.yml`), so capture keeps working when the Mac sleeps. Only the API is reachable from outside, over HTTPS at `https://links-api.hetzner.pratham82.in`, behind the host's NGINX and the `X-API-Key` header. The dashboard runs on the Mac (`docker-compose.dashboard.yml`) and calls that URL from its server side, so the key never reaches the browser.
+
+Tailscale is no longer part of the setup. It's only useful if you want to open the Mac's dashboard from another device, and then only while the Mac is awake. See [Deployment](#deployment) for the setup.
 
 ---
 
@@ -430,8 +456,8 @@ Every service has `restart: unless-stopped`, so containers come back by themselv
 
 | Command                                                 | When                                                        |
 | ------------------------------------------------------- | ----------------------------------------------------------- |
-| `make deploy`                                           | New code merged: pulls, rebuilds, restarts, runs migrations |
-| `make up`                                               | After editing `.env`                                        |
+| `make deploy`                                           | New code merged: rebuilds the backend, runs migrations      |
+| `make up`                                               | Start the backend (db, api, worker, bot); also after `.env` |
 | `make ps`                                               | See what's running                                          |
 | `make logs`                                             | Follow all logs (Ctrl+C to exit)                            |
 | `make logs s=bot`                                       | Follow one service (`api`, `worker`, `bot`, `db`)           |
@@ -442,6 +468,8 @@ Every service has `restart: unless-stopped`, so containers come back by themselv
 | `make restore FILE=~/backups/linkvault-2026-09-26.dump` | Replace the database with a backup                          |
 | `make psql`                                             | Open an SQL shell (`\q` to exit)                            |
 | `make health`                                           | Check the API is up                                         |
+
+The server's compose file has no `web` service, so these commands only ever touch the backend; the dashboard runs on the Mac.
 
 **Mac Mini** (dashboard)
 
