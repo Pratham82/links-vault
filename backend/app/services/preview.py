@@ -243,15 +243,18 @@ async def resolve_short_link(client: httpx.AsyncClient, url: str) -> str:
     raise RetryableFetchError(f"{url}: more than {MAX_SHORT_LINK_HOPS} short-link redirects")
 
 
-async def _fetch_page(client: httpx.AsyncClient, url: str) -> Preview:
+async def _fetch_html(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str] | None = None
+) -> tuple[str, str] | None:
+    """GET a page and return `(html, final_url)`, or None if it isn't HTML."""
     try:
-        async with client.stream("GET", url, follow_redirects=True) as response:
+        async with client.stream("GET", url, headers=headers, follow_redirects=True) as response:
             if error := _status_error(url, response):
                 raise error
             content_type = response.headers.get("content-type", "").lower()
             if content_type and "html" not in content_type:
                 # A PDF, image, etc.: nothing to parse, but the link itself is fine.
-                return Preview()
+                return None
             body = bytearray()
             async for chunk in response.aiter_bytes():
                 body += chunk
@@ -266,7 +269,14 @@ async def _fetch_page(client: httpx.AsyncClient, url: str) -> Preview:
         html = body.decode(encoding, errors="replace")
     except LookupError:  # a charset Python doesn't know
         html = body.decode("utf-8", errors="replace")
-    return parse_html(html, final_url)
+    return html, final_url
+
+
+async def _fetch_page(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str] | None = None
+) -> Preview:
+    page = await _fetch_html(client, url, headers)
+    return parse_html(*page) if page else Preview()
 
 
 async def _fetch_oembed(
@@ -336,6 +346,128 @@ async def _tweet_image(client: httpx.AsyncClient, url: str) -> str | None:
     return page.image_url
 
 
+# --- Instagram ---
+
+
+# Without a login, Instagram serves browsers (and most server IPs) an app shell titled just
+# "Instagram" with no og:image. Meta's own link-preview crawler still gets the OG tags.
+INSTAGRAM_CRAWLER_HEADERS = {
+    "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+}
+_GENERIC_INSTAGRAM_TITLES = frozenset({"instagram", "login • instagram"})
+# Elements with no closing tag; they must not count toward nesting depth.
+_VOID_TAGS = frozenset({"area", "br", "hr", "img", "input", "link", "meta", "source", "wbr"})
+
+
+class _InstagramEmbedParser(HTMLParser):
+    """Reads the post image, author and caption from Instagram's public embed page.
+
+    The embed page (what `<blockquote class="instagram-media">` loads in an iframe) is
+    served without a login and marks its parts with stable class names.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.image_url: str | None = None
+        self.username: str | None = None
+        self.caption_parts: list[str] = []
+        self._username_parts: list[str] | None = None
+        # Depth inside <div class="Caption">, and inside the parts of it that aren't text
+        # (the username link and the "view all comments" link).
+        self._caption_depth = 0
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        classes = (attributes.get("class") or "").split()
+        if tag == "img" and "EmbeddedMediaImage" in classes and self.image_url is None:
+            self.image_url = attributes.get("src")
+        elif "UsernameText" in classes and self.username is None:
+            self._username_parts = []
+        if tag in _VOID_TAGS:
+            if tag == "br" and self._caption_depth and not self._skip_depth:
+                self.caption_parts.append("\n")
+            return
+        if self._caption_depth:
+            self._caption_depth += 1
+            if self._skip_depth or {"CaptionUsername", "CaptionComments"} & set(classes):
+                self._skip_depth += 1
+        elif "Caption" in classes:
+            self._caption_depth = 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _VOID_TAGS:  # "<br />" calls this too
+            return
+        if self._username_parts is not None and tag in {"span", "a", "div"}:
+            self.username = "".join(self._username_parts).strip() or None
+            self._username_parts = None
+        if self._caption_depth:
+            self._caption_depth -= 1
+            if self._skip_depth:
+                self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._username_parts is not None:
+            self._username_parts.append(data)
+        elif self._caption_depth and not self._skip_depth:
+            self.caption_parts.append(data)
+
+
+def parse_instagram_embed(html: str, base_url: str) -> Preview:
+    parser = _InstagramEmbedParser()
+    parser.feed(html)
+    parser.close()
+    caption = "\n".join(
+        line.strip() for line in "".join(parser.caption_parts).splitlines() if line.strip()
+    )
+    first_line = caption.splitlines()[0] if caption else ""
+    author = parser.username
+    if author and first_line:
+        title: str | None = f"{author} on Instagram: {first_line}"
+    else:
+        title = f"{author} on Instagram" if author else first_line or None
+    return Preview(
+        title=_clean(title, 120),
+        description=_clean(caption, _DESCRIPTION_LIMIT),
+        image_url=_absolute_http_url(parser.image_url, base_url),
+        site_name="Instagram",
+    )
+
+
+def _is_useful_instagram_preview(preview: Preview) -> bool:
+    title = (preview.title or "").strip().lower()
+    return bool(preview.image_url) or bool(title and title not in _GENERIC_INSTAGRAM_TITLES)
+
+
+def instagram_embed_url(url: str) -> str | None:
+    """https://www.instagram.com/reel/ABC → https://www.instagram.com/reel/ABC/embed/captioned/"""
+    segments = [s for s in urlsplit(url).path.split("/") if s]
+    if len(segments) < 2 or segments[0] not in {"p", "reel", "reels", "tv"}:
+        return None
+    kind = "reel" if segments[0] == "reels" else segments[0]
+    return f"https://www.instagram.com/{kind}/{segments[1]}/embed/captioned/"
+
+
+async def _instagram_preview(client: httpx.AsyncClient, url: str) -> Preview:
+    """OG tags as seen by Meta's crawler, else the embed page. Never the bare app shell."""
+    preview = await _fetch_page(client, url, INSTAGRAM_CRAWLER_HEADERS)
+    if _is_useful_instagram_preview(preview):
+        return preview
+    if embed_url := instagram_embed_url(url):
+        try:
+            page = await _fetch_html(client, embed_url)
+        except FetchError:
+            # The post page itself loaded, so a broken embed page says nothing about the link.
+            page = None
+        if page:
+            embed = parse_instagram_embed(*page)
+            if _is_useful_instagram_preview(embed):
+                return replace(embed, og_type=preview.og_type)
+    # Saving "Instagram" as the title would hide the link behind a useless card for good.
+    # Instagram serves the shell when it's rate-limiting us too, so try again later.
+    raise RetryableFetchError(f"{url}: Instagram returned no preview (login wall)")
+
+
 async def fetch_preview(client: httpx.AsyncClient, url: str) -> Preview:
     """Fetch the preview for a normalized URL. Raises `DeadLinkError`/`RetryableFetchError`."""
     content_type = classify(url)
@@ -344,7 +476,9 @@ async def fetch_preview(client: httpx.AsyncClient, url: str) -> Preview:
         preview = await _youtube_preview(client, url)
     elif content_type is ContentType.TWEET:
         preview = await _tweet_preview(client, url)
-    # Instagram's oEmbed needs a Facebook app token, so Instagram uses the page's OG tags.
+    elif content_type is ContentType.INSTAGRAM:
+        # Instagram's oEmbed needs a Facebook app token, so use the page or the embed page.
+        preview = await _instagram_preview(client, url)
     if preview is None:
         preview = await _fetch_page(client, url)
     if preview.site_name is None:

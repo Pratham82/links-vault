@@ -16,8 +16,10 @@ from app.services.preview import (
     RetryableFetchError,
     build_http_client,
     fetch_preview,
+    instagram_embed_url,
     is_unknown_host,
     parse_html,
+    parse_instagram_embed,
     resolve_short_link,
 )
 
@@ -345,6 +347,95 @@ async def test_deleted_tweet_is_dead(http: httpx.AsyncClient) -> None:
     respx.get(X_OEMBED_URL).respond(404)
     with pytest.raises(DeadLinkError):
         await fetch_preview(http, TWEET_URL)
+
+
+# --- fetch_preview: Instagram ---
+
+INSTAGRAM_REEL = "https://www.instagram.com/reel/C9abc"
+INSTAGRAM_EMBED = "https://www.instagram.com/reel/C9abc/embed/captioned/"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (INSTAGRAM_REEL, INSTAGRAM_EMBED),
+        ("https://www.instagram.com/p/C9abc", "https://www.instagram.com/p/C9abc/embed/captioned/"),
+        ("https://www.instagram.com/reels/C9abc", INSTAGRAM_EMBED),
+        ("https://www.instagram.com/chefasha", None),
+    ],
+)
+def test_instagram_embed_url(url: str, expected: str | None) -> None:
+    assert instagram_embed_url(url) == expected
+
+
+def test_parse_instagram_embed() -> None:
+    preview = parse_instagram_embed(fixture_html("instagram_embed.html"), INSTAGRAM_EMBED)
+    assert preview == Preview(
+        title="chefasha on Instagram: 15-minute dal tadka & jeera rice",
+        # The username link and the "view all comments" link aren't part of the caption.
+        description="15-minute dal tadka & jeera rice Recipe below 👇",
+        image_url="https://scontent.cdninstagram.com/v/t51/embed.jpg?stp=dst-jpg&oh=xyz",
+        site_name="Instagram",
+    )
+
+
+def test_parse_instagram_embed_without_markup_is_empty() -> None:
+    preview = parse_instagram_embed(fixture_html("instagram_login_wall.html"), INSTAGRAM_EMBED)
+    assert preview == Preview(site_name="Instagram")
+
+
+@respx.mock
+async def test_instagram_uses_og_tags_from_crawler_fetch(http: httpx.AsyncClient) -> None:
+    route = respx.get(INSTAGRAM_REEL).respond(200, html=fixture_html("instagram_reel.html"))
+    embed = respx.get(INSTAGRAM_EMBED)
+
+    preview = await fetch_preview(http, INSTAGRAM_REEL)
+
+    assert preview.title == 'Chef Asha on Instagram: "15-minute dal tadka"'
+    assert preview.image_url is not None
+    # Instagram only gives Meta's link-preview crawler the OG tags.
+    assert route.calls.last.request.headers["user-agent"].startswith("facebookexternalhit/")
+    assert not embed.called
+
+
+@respx.mock
+async def test_instagram_login_wall_falls_back_to_embed_page(http: httpx.AsyncClient) -> None:
+    respx.get(INSTAGRAM_REEL).respond(200, html=fixture_html("instagram_login_wall.html"))
+    respx.get(INSTAGRAM_EMBED).respond(200, html=fixture_html("instagram_embed.html"))
+
+    preview = await fetch_preview(http, INSTAGRAM_REEL)
+
+    assert preview.title == "chefasha on Instagram: 15-minute dal tadka & jeera rice"
+    assert preview.image_url == (
+        "https://scontent.cdninstagram.com/v/t51/embed.jpg?stp=dst-jpg&oh=xyz"
+    )
+    assert preview.site_name == "Instagram"
+
+
+@respx.mock
+async def test_instagram_login_wall_everywhere_is_retryable(http: httpx.AsyncClient) -> None:
+    """Never save the bare "Instagram" title: retry, and if it never works the link fails."""
+    respx.get(INSTAGRAM_REEL).respond(200, html=fixture_html("instagram_login_wall.html"))
+    respx.get(INSTAGRAM_EMBED).respond(200, html=fixture_html("instagram_login_wall.html"))
+
+    with pytest.raises(RetryableFetchError, match="login wall"):
+        await fetch_preview(http, INSTAGRAM_REEL)
+
+
+@respx.mock
+async def test_instagram_broken_embed_page_is_retryable(http: httpx.AsyncClient) -> None:
+    respx.get(INSTAGRAM_REEL).respond(200, html=fixture_html("instagram_login_wall.html"))
+    respx.get(INSTAGRAM_EMBED).respond(404)
+
+    with pytest.raises(RetryableFetchError):
+        await fetch_preview(http, INSTAGRAM_REEL)
+
+
+@respx.mock
+async def test_deleted_instagram_post_is_dead(http: httpx.AsyncClient) -> None:
+    respx.get(INSTAGRAM_REEL).respond(404)
+    with pytest.raises(DeadLinkError):
+        await fetch_preview(http, INSTAGRAM_REEL)
 
 
 # --- resolve_short_link ---

@@ -14,6 +14,7 @@ from tests.conftest import BACKEND_DIR
 BEFORE_PHASE_2 = "65d309536b27"
 PHASE_2 = "e4e845be1e3b"
 PHASE_3 = "2e626bfd3a4f"
+REQUEUE_INSTAGRAM = "7b3f1c9d2a4e"
 
 
 async def _execute(url: str, *statements: str) -> list:
@@ -111,4 +112,38 @@ def test_phase_3_migration_drops_repeated_imports(scratch_db: str) -> None:
 
     rows = asyncio.run(_execute(scratch_db, "SELECT note FROM links ORDER BY note"))
     assert [row.note for row in rows] == ["kept", "live", "other day"]
+    command.downgrade(config, "base")
+
+
+def test_instagram_login_wall_previews_are_requeued(scratch_db: str) -> None:
+    config = _alembic(scratch_db)
+    command.upgrade(config, PHASE_3)
+    asyncio.run(
+        _execute(
+            scratch_db,
+            """
+            INSERT INTO links (url, normalized_url, source_channel, sender, shared_at,
+                               content_type, status, title, image_url, enrich_attempts)
+            VALUES
+              ('https://www.instagram.com/reel/a', 'https://www.instagram.com/reel/a', 'api',
+               'x', '2026-01-01Z', 'instagram', 'enriched', 'Instagram', NULL, 1),
+              ('https://www.instagram.com/reel/b', 'https://www.instagram.com/reel/b', 'api',
+               'x', '2026-01-01Z', 'instagram', 'enriched', 'Chef on Instagram', '/t/b.jpg', 1),
+              ('https://example.com/a', 'https://example.com/a', 'api',
+               'x', '2026-01-01Z', 'article', 'enriched', 'Instagram', NULL, 1)
+            """,
+        )
+    )
+
+    command.upgrade(config, REQUEUE_INSTAGRAM)
+
+    rows = asyncio.run(
+        _execute(scratch_db, "SELECT url, status, title, enrich_attempts FROM links ORDER BY url")
+    )
+    assert [tuple(row) for row in rows] == [
+        ("https://example.com/a", "enriched", "Instagram", 1),
+        ("https://www.instagram.com/reel/a", "pending", None, 0),
+        # A real preview is left alone.
+        ("https://www.instagram.com/reel/b", "enriched", "Chef on Instagram", 1),
+    ]
     command.downgrade(config, "base")
