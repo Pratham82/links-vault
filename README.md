@@ -294,6 +294,7 @@ IMPORT_DOMAIN_DELAY_SECONDS=5
 POSTGRES_PASSWORD=                   # server only, see Deployment
 API_HOST_PORT=8200                   # server only: loopback port NGINX proxies to
 DASHBOARD_API_BASE_URL=https://links-api.hetzner.pratham82.in  # Mac only
+DASHBOARD_PASSWORD=                  # dashboard sign-in; empty = editing disabled
 TAGGER=none            # none | ollama | api
 OLLAMA_URL=http://host.docker.internal:11434
 OBSIDIAN_VAULT_PATH=
@@ -332,14 +333,18 @@ Thumbnails live in the `thumbnails` volume and are served at `GET /thumbnails/{f
 
 ### Dashboard
 
-`docker compose up` also starts the dashboard at http://localhost:3000 (`web` service). It shows every link as a card (thumbnail, title, site, type, tags, note, shared date), newest `shared_at` first, 48 per page. Filter by type, source, tag and date range (calendar days in India time, both inclusive), or search title, URL, description and note. Clicking a type badge or a `#tag` filters by it. Each card can be edited (note, tags, type) or deleted.
+`docker compose up` also starts the dashboard at http://localhost:3000 (`web` service). It shows every link as a card (thumbnail, title, site, type, tags, note, shared date), newest `shared_at` first, 48 per page. Filter by type, source, tag and date range (calendar days in India time, both inclusive), or search title, URL, description and note. Clicking a type badge or a `#tag` filters by it. Once signed in, each card can be edited (note, tags, type) or deleted.
 
-The dashboard calls the API from its server, never from the browser, so `API_KEY` stays off the page. It needs no extra config: it reuses `API_KEY` from `.env`. To run it outside Docker, with the API on localhost:8000:
+The dashboard calls the API from its server, never from the browser, so `API_KEY` stays off the page. It reuses `API_KEY` from `.env`.
+
+**Sign-in.** Anyone who can open the dashboard can browse it, but editing and deleting need a sign-in with `DASHBOARD_PASSWORD` (Sign in, top right). The browser then keeps an `httpOnly` session cookie for 30 days; Sign out removes it. The edit and delete buttons are hidden when signed out, and the server actions behind them refuse to run without a valid session, so they can't be called directly either. Changing `DASHBOARD_PASSWORD` or `API_KEY` signs every browser out. With `DASHBOARD_PASSWORD` empty, sign-in is off and nothing can be edited from the dashboard. The API itself is unchanged: every route except `/health`, WhatsApp import included, still needs `X-API-Key`.
+
+To run it outside Docker, with the API on localhost:8000:
 
 ```bash
 cd web
 npm install
-printf 'API_KEY=change-me\nAPI_BASE_URL=http://localhost:8000\n' > .env.local
+printf 'API_KEY=change-me\nAPI_BASE_URL=http://localhost:8000\nDASHBOARD_PASSWORD=change-me\n' > .env.local
 npm run dev
 ```
 
@@ -440,11 +445,12 @@ docker compose -f docker-compose.server.yml logs -f api bot   # migrations are a
 
 ```bash
 docker compose down             # stop the full local stack (frees port 3000; volumes are kept as a fallback)
-# .env on the Mac: API_KEY=<the server's key>, DASHBOARD_API_BASE_URL=https://links-api.hetzner.pratham82.in
+# .env on the Mac: API_KEY=<the server's key>, DASHBOARD_API_BASE_URL=https://links-api.hetzner.pratham82.in,
+#                  DASHBOARD_PASSWORD=<a password to edit/delete from the dashboard>
 make dashboard                  # = docker compose -f docker-compose.dashboard.yml up -d --build
 ```
 
-The dashboard is at http://localhost:3000. Without Docker, put the same `API_KEY` and `API_BASE_URL=https://links-api.hetzner.pratham82.in` in `web/.env.local` and run `npm run dev`. Send the bot a link while the Mac is asleep; it appears in the dashboard once the Mac wakes.
+The dashboard is at http://localhost:3000. Without Docker, put the same `API_KEY`, `DASHBOARD_PASSWORD` and `API_BASE_URL=https://links-api.hetzner.pratham82.in` in `web/.env.local` and run `npm run dev`. Send the bot a link while the Mac is asleep; it appears in the dashboard once the Mac wakes.
 
 ### Make commands
 

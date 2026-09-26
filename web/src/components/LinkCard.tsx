@@ -30,9 +30,11 @@ const STATUS_BADGES: Partial<Record<LinkStatus, { label: string; className: stri
 interface Props {
   link: LinkItem;
   filters: Filters;
+  /** Show the edit and delete controls (only when signed in). */
+  canEdit: boolean;
 }
 
-export function LinkCard({ link, filters }: Props) {
+export function LinkCard({ link, filters, canEdit }: Props) {
   const site = link.site_name ?? hostOf(link.normalized_url);
   const status = STATUS_BADGES[link.status];
 
@@ -127,12 +129,14 @@ export function LinkCard({ link, filters }: Props) {
               </span>
             )}
           </p>
-          <LinkEditor
-            linkId={link.id}
-            note={link.note}
-            tags={link.tags}
-            contentType={link.content_type}
-          />
+          {canEdit && (
+            <LinkEditor
+              linkId={link.id}
+              note={link.note}
+              tags={link.tags}
+              contentType={link.content_type}
+            />
+          )}
         </div>
       </div>
     </Card>
