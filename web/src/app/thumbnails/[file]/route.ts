@@ -2,14 +2,19 @@
 //
 // The API's /thumbnails/{file} needs the X-API-Key header, which a browser <img> can't
 // send (and must never know). This handler lives at the same path on the dashboard, so a
-// link's image_url ("/thumbnails/<id>.jpg") works as an <img src> unchanged.
+// link's image_url ("/thumbnails/<id>.jpg") works as an <img src> unchanged. Like the rest
+// of the dashboard, it only answers signed-in browsers.
 
 import { ApiError, apiFetch } from "@/lib/api";
+import { isSignedIn } from "@/lib/session";
 
 // Only the names the worker generates: "<uuid>.<ext>". Same rule as the API.
 const FILENAME_RE = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\.(jpg|png|webp|gif)$/;
 
 export async function GET(_request: Request, ctx: RouteContext<"/thumbnails/[file]">) {
+  if (!(await isSignedIn())) {
+    return new Response("Sign in required", { status: 401 });
+  }
   const { file } = await ctx.params;
   if (!FILENAME_RE.test(file)) {
     return new Response("Not found", { status: 404 });

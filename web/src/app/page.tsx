@@ -6,10 +6,12 @@ import { LinkCard } from "@/components/LinkCard";
 import { LinkGrid, LinkGridItem } from "@/components/LinkGrid";
 import { Pagination } from "@/components/Pagination";
 import { ApiError, listLinks } from "@/lib/api";
+import { requireSession } from "@/lib/session";
 import { PAGE_SIZE, dashboardHref, hasActiveFilters, parseFilters } from "@/lib/filters";
 import type { LinkPage } from "@/lib/types";
 
 export default async function Home(props: PageProps<"/">) {
+  await requireSession();
   const filters = parseFilters(await props.searchParams);
 
   let page: LinkPage;
