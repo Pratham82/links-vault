@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     database_url: str
     api_key: str
+    # Interactive API docs (/docs, /redoc, /openapi.json). Turn off where the API is public.
+    docs_enabled: bool = True
     # Worker: links enriched at once, and how long to wait when there's nothing to do.
     preview_concurrency: int = Field(default=5, ge=1, le=50)
     worker_poll_seconds: float = Field(default=5.0, gt=0)
