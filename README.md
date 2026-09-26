@@ -415,36 +415,32 @@ docker compose -f docker-compose.server.yml logs -f api bot   # migrations are a
 ```bash
 docker compose down             # stop the full local stack (frees port 3000; volumes are kept as a fallback)
 # .env on the Mac: API_KEY=<the server's key>, DASHBOARD_API_BASE_URL=https://links-api.hetzner.pratham82.in
-docker compose -f docker-compose.dashboard.yml up -d --build
+make dashboard                  # = docker compose -f docker-compose.dashboard.yml up -d --build
 ```
 
 The dashboard is at http://localhost:3000. Without Docker, put the same `API_KEY` and `API_BASE_URL=https://links-api.hetzner.pratham82.in` in `web/.env.local` and run `npm run dev`. Send the bot a link while the Mac is asleep; it appears in the dashboard once the Mac wakes.
 
 ### Day-to-day on the server
 
-Two aliases for `~/.bashrc` (then `source ~/.bashrc`) save typing the compose file every time:
-
-```bash
-alias lv='docker compose -f ~/projects/links-vault/docker-compose.server.yml'
-alias lv-deploy='cd ~/projects/links-vault && git pull && lv up -d --build'
-```
-
-`lv` is the compose command, so it takes a subcommand (`lv ps`, `lv logs`, …). `lv-deploy` pulls the latest code, rebuilds the images and restarts whatever changed; the `api` container applies new migrations on startup.
+The `Makefile` at the repo root wraps the long compose commands. Run `make` inside `~/projects/links-vault` to list them (install make with `sudo apt install make` if the server doesn't have it). Pass services with `s=`, e.g. `make logs s=bot`.
 
 Every service has `restart: unless-stopped`, so containers come back after a crash or a server reboot (as long as Docker starts at boot: `sudo systemctl enable docker`). You only run something when a thing changes:
 
-| When                            | Run                               |
-| ------------------------------- | --------------------------------- |
-| Nothing changed / server reboot | nothing                           |
-| `.env` changed                  | `lv up -d`                        |
-| New code merged                 | `lv-deploy`                       |
-| One service misbehaves          | `lv restart bot` (or api, worker) |
-| What's running?                 | `lv ps`                           |
-| Watch logs (Ctrl+C to exit)     | `lv logs -f api bot worker`       |
-| Last lines of one service       | `lv logs --tail 50 bot`           |
-| Stop everything (keeps data)    | `lv stop`                         |
+| When                            | Run                                           |
+| ------------------------------- | --------------------------------------------- |
+| Nothing changed / server reboot | nothing                                       |
+| `.env` changed                  | `make up`                                     |
+| New code merged                 | `make deploy` (git pull, rebuild, restart)    |
+| One service misbehaves          | `make restart s=bot` (or api, worker)         |
+| What's running?                 | `make ps`                                     |
+| Watch logs (Ctrl+C to exit)     | `make logs` or `make logs s=bot`              |
+| Stop everything (keeps data)    | `make stop`                                   |
+| Back up now                     | `make backup` (to `~/backups`)                |
+| Restore a backup                | `make restore FILE=~/backups/linkvault-….dump` |
+| SQL shell                       | `make psql`                                   |
+| Is the hosted API up?           | `make health`                                 |
 
-Never run `lv down -v`: `-v` deletes the database and thumbnail volumes.
+`make deploy` applies new migrations too: the `api` container runs them on startup. Never run `docker compose … down -v`: `-v` deletes the database and thumbnail volumes.
 
 Is it up? From anywhere:
 
@@ -459,12 +455,12 @@ On the server itself, `curl localhost:8200/health` skips NGINX, which tells you 
 
 ### Updating and backups
 
-On the server, `lv-deploy` ships the latest code. Rebuild the dashboard on the Mac with `git pull && docker compose -f docker-compose.dashboard.yml up -d --build`.
+On the server, `make deploy` ships the latest code. On the Mac, `git pull && make dashboard` rebuilds the dashboard.
 
-The data now lives only on the server, so dump it nightly. Run `mkdir -p ~/backups` once, then add this with `crontab -e` (cron doesn't read `~/.bashrc`, so it spells out the command):
+The data now lives only on the server, so back it up nightly with `crontab -e`. Cron uses the server's clock, which is UTC, so `45 21 * * *` is 03:15 in India:
 
 ```
-15 3 * * * cd ~/projects/links-vault && docker compose -f docker-compose.server.yml exec -T db pg_dump -U linkvault -Fc linkvault > ~/backups/linkvault-$(date +\%F).dump
+45 21 * * * cd ~/projects/links-vault && make backup
 ```
 
 Copy those dumps off the server now and then (or enable Hetzner backups).
